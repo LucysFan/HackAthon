@@ -23,3 +23,8 @@ experiments/_*.npy
 .DS_Store
 *.log
 experiments/out/
+
+# промежуточные чекпоинты обучения (генерируются train_gpu.py / train.py);
+# единственный сдаваемый чекпоинт — outputs/best.pt
+outputs/distilled.pt
+outputs/teacher_masks.pt

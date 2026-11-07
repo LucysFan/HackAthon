@@ -10,3 +10,6 @@ numpy==2.2.6
 Pillow==13.0.0
 matplotlib==3.11.2
 reportlab==5.1.0
+# резервная видеозапись демо (demo_backup.mp4): кодировщик libx264 идёт в образе ffmpeg
+imageio==2.38.1
+imageio-ffmpeg==0.8.1
