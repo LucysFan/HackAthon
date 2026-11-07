@@ -77,13 +77,25 @@ def summarize(rows: list[dict]) -> dict:
     return out
 
 
+def _pick_device(kind: str = "auto") -> torch.device:
+    """Автовыбор устройства: cuda → mps → cpu (код один и тот же)."""
+    if kind != "auto":
+        return torch.device(kind)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 # ------------------------------------------------------------------ инференс NN
 def net_phase(net, targets: np.ndarray, noise: bool = False) -> np.ndarray:
     net.eval()
+    dev = next(net.parameters()).device
     with torch.no_grad():
-        x = torch.as_tensor(targets, dtype=torch.float32)[None]
+        x = torch.as_tensor(targets, dtype=torch.float32)[None].to(dev)
         phi = net(x, noise=noise)
-    return phi[0, 0].numpy()
+    return phi[0, 0].detach().float().cpu().numpy()
 
 
 def finetune(net, targets: np.ndarray, steps: int, lr: float, seed: int) -> None:
@@ -92,7 +104,8 @@ def finetune(net, targets: np.ndarray, steps: int, lr: float, seed: int) -> None
     pipe = FullPipeline(net)
     net.train()
     torch.manual_seed(seed)
-    q = torch.as_tensor(targets, dtype=torch.float32)[None].repeat(2, 1, 1, 1)
+    dev = next(net.parameters()).device
+    q = torch.as_tensor(targets, dtype=torch.float32)[None].repeat(2, 1, 1, 1).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps, eta_min=lr * 0.1)
     for s in range(steps):
@@ -127,8 +140,16 @@ def main() -> int:
     ap.add_argument("--refine-cycles", type=int, default=2,
                     help="дополнительных SGDR-циклов доводки из квантованной фазы")
     ap.add_argument("--gs-it-hop", type=int, default=150, help="круги GS для старта доводки")
+    ap.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"),
+                    help="устройство инференса: auto — cuda → mps → cpu")
+    ap.add_argument("--pipeline", choices=("netphys", "polish"), default="netphys",
+                    help="netphys — физика внутри сети (один прямой проход, без внешней "
+                         "доводки); polish — прежняя внешняя доводка для сравнения")
+    ap.add_argument("--phys-steps", type=int, default=0,
+                    help="K шагов физики внутри сети (0 — взять из чекпоинта)")
+    ap.add_argument("--phys-gain", type=float, default=0.0, help="начальный шаг α физики")
     ap.add_argument("--init", choices=("nn", "gs", "blend", "nn+gs"), default="nn+gs",
-                    help="начальное приближение для доводки")
+                    help="начальное приближение для внешней доводки")
     ap.add_argument("--finetune-lr", type=float, default=1e-5)
     ap.add_argument("--out", default=None)
     ap.add_argument("--tag", default="nn")
@@ -142,23 +163,34 @@ def main() -> int:
     torch.manual_seed(seed)
 
     targets = T.load_targets()
-    ckpt_path = args.ckpt or os.path.join(C.PATHS.ckpt, "best.pt")
+    # по умолчанию — сдаваемый чекпоинт outputs/best.pt; резервный вариант —
+    # лучший чекпоинт обучения в outputs/checkpoints/best.pt
+    ckpt_path = args.ckpt or os.path.join(C.PATHS.out, "best.pt")
+    if args.ckpt is None and not os.path.exists(ckpt_path):
+        alt = os.path.join(C.PATHS.ckpt, "best.pt")
+        ckpt_path = alt if os.path.exists(alt) else ckpt_path
 
     # ---------------------------------------------------------------- сеть
     # архитектура берётся из чекпоинта (если сохранена), иначе — CLI-параметры
-    _ck = torch.load(args.ckpt, map_location="cpu") if os.path.exists(args.ckpt) else {}
+    _ck = (torch.load(ckpt_path, map_location="cpu", weights_only=False)
+           if os.path.exists(ckpt_path) else {})
     _arch = _ck.get("arch") if isinstance(_ck, dict) else None
     net = build_net(_arch or dict(width=args.width, depth=args.depth,
                                   norm=args.norm, stem_stride=args.stem_stride))
+    dev = _pick_device(args.device)
+    print(f"устройство: {dev}", flush=True)
     print(f"сеть: {sum(p.numel() for p in net.parameters()) / 1e6:.2f}M параметров, "
           f"архитектура {_arch or 'по умолчанию'}", flush=True)
     ckpt_info = dict(path=ckpt_path, exists=False)
     if os.path.exists(ckpt_path):
-        state = torch.load(ckpt_path, map_location="cpu")
+        state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         net.load_state_dict(state["model"])
+        net.to(dev)
         cfg = state.get("config", {})
         ckpt_info = dict(path=os.path.relpath(ckpt_path, C.PATHS.root), exists=True,
-                         step=state.get("step"), val_ssim=state.get("val_ssim"),
+                         stage=state.get("stage"), arch=state.get("arch"),
+                         pack=state.get("pack"), step=state.get("step"),
+                         val_ssim=state.get("val_ssim"),
                          mode=cfg.get("mode"), steps=cfg.get("steps"))
         print(f"checkpoint: {ckpt_info}")
     else:
@@ -170,9 +202,45 @@ def main() -> int:
                         config={"mode": "finetune"}), os.path.join(out_dir, "finetuned.pt"))
 
     # ------------------------------------------------------- ДОЭ и реконструкции
-    phi_nn = net_phase(net, targets)
-    # 1) метрики «сеть как есть» (без доводки) — для честного сравнения
-    _v_net = np.squeeze(np.asarray(P.encode8bit(torch.as_tensor(phi_nn))))
+    phys_info = None
+    if args.pipeline == "netphys":
+        # Сеть с физикой внутри: фаза = прямой проход (U-Net → K шагов
+        # дифференцируемого физического слоя → квантование 8 бит).
+        # Никакого классического итерационного метода после сети не вызывается.
+        from hdoe import netphys as NP
+        pk = (_ck.get("pack") or {}) if isinstance(_ck, dict) else {}
+        K = args.phys_steps or int(pk.get("steps", 384))
+        gain = args.phys_gain or float(pk.get("gain", 0.35))
+        t0 = time.time()
+        pack = NP.PhysicsInNet(net, steps=K, gain=gain, quantize=True,
+                               learnable=False,
+                               schedule=str(pk.get("schedule", "decay")),
+                               gain_end=float(pk.get("gain_end", 0.02)))
+        pack.to(dev)
+        pack.eval()
+        with torch.no_grad():
+            _, phi_t_ = pack(torch.as_tensor(targets, dtype=torch.float32)[None].to(dev))
+        phi_nn = phi_t_[0, 0].detach().float().cpu().numpy()
+        dt = time.time() - t0
+        phys_info = dict(pipeline="netphys", steps=K, gain=gain,
+                         schedule=str(pk.get("schedule", "decay")),
+                         gain_end=float(pk.get("gain_end", 0.02)),
+                         seconds=dt,
+                         mode="один прямой проход сети, внешняя доводка не используется")
+        print(f"сеть с физикой внутри: K={K}, α={gain}, {dt:.1f} с "
+              f"(без внешней доводки)", flush=True)
+    else:
+        phi_nn = net_phase(net, targets)
+    # 1) метрики «сеть как есть» (выход U-Net ДО физического слоя) — честное
+    #    разделение «сеть» / «сеть + физика внутри»
+    net_only_rows = None
+    if args.pipeline == "netphys":
+        with torch.no_grad():
+            _phi_net = net(torch.as_tensor(targets, dtype=torch.float32)[None].to(dev))[0, 0]
+        _phi_net = _phi_net.detach().float().cpu().numpy()
+        _v_net = np.squeeze(np.asarray(P.encode8bit(torch.as_tensor(_phi_net))))
+    else:
+        _v_net = np.squeeze(np.asarray(P.encode8bit(torch.as_tensor(phi_nn))))
     phi_net_only = np.asarray(P.decode8bit(_v_net), dtype=np.float32)
     net_only_rows = None
     try:
@@ -182,8 +250,8 @@ def main() -> int:
               f"SSIM {POL0.metrics_of(phi_net_only, targets)['ssim']:.4f}")
     except Exception as exc:                                   # noqa: BLE001
         print("не удалось посчитать метрики сети без доводки:", exc)
-    if args.refine > 0:
-        # Физическая доводка (п. 5.6.2): сеть / GS / круговая смесь как старт,
+    if args.refine > 0 and args.pipeline == "polish":
+        # Внешняя физическая доводка (п. 5.6.2): сеть / GS / круговая смесь как старт,
         # выбор лучшего по протоколу отчёта (из квантованной фазы).
         from hdoe import polish as POL
         from hdoe import gs as G2
@@ -298,9 +366,11 @@ def main() -> int:
             nn=dict(vmin=int(v_nn.min()), vmax=int(v_nn.max()),
                     mean=float(phi_q_nn.mean()), std=float(phi_q_nn.std())),
         ),
-        pipeline=("сеть → (GS / смесь как альтернативные старты) → физическая доводка "
-                  "→ квантование 8 бит → реконструкции" if args.refine > 0 else
-                  "сеть → квантование 8 бит → реконструкции"),
+        pipeline=("сеть (U-Net) с физикой внутри → K шагов дифференцируемого "
+                  "физического слоя → квантование 8 бит → реконструкции"
+                  if args.pipeline == "netphys" else
+                  "сеть → внешняя доводка → квантование 8 бит → реконструкции"),
+        phys=phys_info,
         nn_network_only=(dict(planes=net_only_rows,
                               mean=summarize(net_only_rows)) if net_only_rows else None),
     )

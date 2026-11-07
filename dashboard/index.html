@@ -15,7 +15,7 @@
       <div class="logo">ДОЭ</div>
       <div class="brand-text">
         <h1>Синтез фазового ДОЭ для четырёхплоскостного восстановления изображений</h1>
-        <div class="sub">U-Net → фазовая маска 128×128 → дифракция Френеля (одно-БПФ) на 4 расстояниях</div>
+        <div class="sub">сеть с физикой внутри → маска 128×128 → четыре плоскости</div>
       </div>
       <div class="variant-switch" title="Глобальный переключатель метода (п. 12.5.7)">
         <button data-variant="nn" class="active">NN</button>
@@ -30,9 +30,6 @@
     <!-- ================= 1. Цели ================= -->
     <section class="panel p-targets" id="panel-targets">
       <div class="panel-head"><span class="num">1</span><h2>Цели</h2>
-        <div class="head-tools">
-          <span class="hint">клик — выбрать активную плоскость</span>
-        </div>
       </div>
       <div class="targets-grid" id="targets-grid"></div>
       <div class="target-caption" id="target-caption"></div>
@@ -57,7 +54,13 @@
         </div>
       </div>
       <canvas id="doe-hist" height="96" class="hist"></canvas>
-      <div class="probe" id="doe-probe">наведите курсор на маску</div>
+      <div class="probe" id="doe-probe"></div>
+      <div class="phys-steps" id="phys-steps">
+        <div class="plot-title">сеть → физика → квантование</div>
+        <canvas id="steps-curve" height="58" class="steps-curve"></canvas>
+        <div class="steps-row" id="steps-row"></div>
+        <div class="probe" id="steps-probe"></div>
+      </div>
     </section>
 
     <!-- ================= 3. Пропагация ================= -->
@@ -65,9 +68,9 @@
       <div class="panel-head"><span class="num">3</span><h2>Пропагация z-свип</h2>
         <div class="head-tools">
           <button id="prop-play" class="primary">⏸ пауза</button>
-          <label class="rng">скорость <input type="range" id="prop-speed" min="0.25" max="4" step="0.25" value="1"><span id="prop-speed-val">×1</span></label>
-          <label class="chk"><input type="checkbox" id="prop-loop" checked> цикл</label>
-          <label class="chk"><input type="checkbox" id="prop-autopause" checked> автопауза на z<sub>i</sub></label>
+          <label class="rng" title="скорость свипа"><input type="range" id="prop-speed" min="0.25" max="4" step="0.25" value="1"><span id="prop-speed-val">×1</span></label>
+          <label class="chk" title="зациклить свип"><input type="checkbox" id="prop-loop" checked>⟳</label>
+          <label class="chk" title="пауза на рабочих z_i"><input type="checkbox" id="prop-autopause" checked>z<sub>i</sub>⏸</label>
         </div>
       </div>
       <div class="prop-row">
@@ -136,7 +139,7 @@
           <canvas id="prof-v" height="90" class="plot"></canvas>
           <div class="plot-title">z-зонд I(z) <span id="zprobe-val"></span></div>
           <canvas id="zprobe" height="110" class="plot"></canvas>
-          <div class="roi-readout" id="roi-readout">ROI: потяните рамку на изображении</div>
+          <div class="roi-readout" id="roi-readout"></div>
         </div>
       </div>
       <div class="meas-bottom">
@@ -171,7 +174,7 @@
     <!-- ================= 8. Физика ================= -->
     <section class="panel p-phys" id="panel-phys">
       <div class="panel-head"><span class="num">8</span><h2>Физика</h2>
-        <div class="head-tools"><span class="hint">граница одно-БПФ-схемы и тест линзы</span></div>
+        <div class="head-tools"><button id="phys-modal" class="mini">таблица 4.7</button></div>
       </div>
       <div class="phys-grid">
         <div class="phys-crit">

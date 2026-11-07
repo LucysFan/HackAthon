@@ -113,7 +113,7 @@ waitReady().then(() => {
   ok('метрики GS в manifest', meta.gs && meta.gs.length === 4);
   ok('PCC NN среднее > PCC GS среднее',
      meta.nn.reduce((a, r) => a + r.pcc, 0) / 4 > meta.gs.reduce((a, r) => a + r.pcc, 0) / 4);
-  ok('тесты 8.1–8.7 в бандле', B.json.tests && B.json.tests.summary.passed === 7);
+  ok('тесты 8.1–8.9 в бандле', B.json.tests && B.json.tests.summary.passed === B.json.tests.summary.total);
 
   // шапка
   ok('бейджи тестов отрисованы', $('.badges').querySelectorAll('.badge').length >= 8);
@@ -173,6 +173,20 @@ waitReady().then(() => {
   sl.value = 10;
   sl.dispatchEvent(new window.Event('input', { bubbles: true }));
   ok('скраб обучения', /\d+/.test($('#train-step-label').textContent));
+
+  // физика внутри сети: полоса шагов K
+  const cells = $('.p-doe').querySelectorAll('#steps-row .step-cell');
+  ok('полоса шагов физики', cells.length >= 2, String(cells.length));
+  ok('кривая шагов физики нарисована', !!$('#steps-curve'));
+  if (cells.length >= 2) {
+    cells[cells.length - 1].onclick();
+    const txt = $('#steps-probe').textContent;
+    ok('выбор кадра K обновляет зонд', /K\s*=\s*\d+/.test(txt) && /PCC/.test(txt), txt.slice(0, 60));
+  }
+
+  // бейдж теста 8.9 (физика внутри сети)
+  const b89 = $('.badge[data-test="8.9"]');
+  ok('бейдж 8.9 «физика в сети»', !!b89 && /✓/.test(b89.textContent), b89 ? b89.textContent.trim() : '—');
 
   // битность A8
   const bits = $('.p-planes').querySelectorAll('#bitbar button');

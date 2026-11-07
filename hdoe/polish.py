@@ -32,7 +32,8 @@ def _norm4(targets: np.ndarray) -> torch.Tensor:
 @torch.no_grad()
 def metrics_of(phi_q: np.ndarray, targets01: np.ndarray) -> dict:
     """Метрики ровно по протоколу отчёта (из квантованной фазы, мин–макс)."""
-    ph = torch.as_tensor(np.asarray(phi_q, dtype=np.float32))[None, None]
+    ph = torch.as_tensor(np.asarray(phi_q, dtype=np.float32))
+    ph = ph[None, None] if ph.dim() == 2 else ph
     rows = []
     pcc, ssim = [], []
     for i, z in enumerate(C.ZS):

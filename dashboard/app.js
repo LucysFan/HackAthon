@@ -26,6 +26,7 @@ const S = {                      // состояние приложения
   roi: null,
   probePX: 64, probePY: 64,
   trainIdx: 0,
+  physStep: 0,
   trainPlaying: false,
   fps: 0,
 };
@@ -132,6 +133,7 @@ async function loadBundle() {
     D.trainRecon = u8('train_recon');
     D.bitdepth = { nn: u8('bitdepth_nn'), gs: u8('bitdepth_gs') };
     D.zprobe = { nn: f32('zprobe_nn'), gs: f32('zprobe_gs') };
+    D.physSteps = u8('phys_steps');
     D.manifest.loaded_keys = keys;
     D.filesUsed = keys.length;
     D.trainSteps = (b.json.train_steps || {}).steps || [];
@@ -157,6 +159,7 @@ async function loadBundle() {
   D.trainRecon = await u8('train_recon.u8.bin');
   D.bitdepth = { nn: await u8('bitdepth_nn.u8.bin'), gs: await u8('bitdepth_gs.u8.bin') };
   D.zprobe = { nn: await f32('zprobe_nn.f32.bin'), gs: await f32('zprobe_gs.f32.bin') };
+  D.physSteps = await u8('phys_steps.u8.bin');
   D.trainSteps = (await j('data/train_steps.json')).steps || [];
   D.trainLog = await j('data/train_log.json');
   D.tests = await j('data/tests.json');
@@ -368,6 +371,7 @@ function renderHeader() {
     ['8.5', 'Кросс-схема', t.cross_scheme],
     ['8.6', 'Граница', t.boundary],
     ['8.7', 'Форматы', t.formats],
+    ['8.9', 'Физика в сети', t.netphys],
   ];
   const tested = items.filter(([, , r]) => r);
   const passed = tested.filter(([, , r]) => (r && (r.passed !== false))).length;
@@ -381,7 +385,8 @@ function renderHeader() {
 function showTest(num) {
   const t = D.tests || {};
   const map = { '8.1': 'parseval', '8.2': 'lens', '8.3': 'quantization', '8.4': 'gradient',
-                '8.5': 'cross_scheme', '8.6': 'boundary', '8.7': 'formats' };
+                '8.5': 'cross_scheme', '8.6': 'boundary', '8.7': 'formats',
+                '8.9': 'netphys' };
   const key = map[num];
   const r = t[key] || {};
   let body = '';
@@ -396,6 +401,8 @@ function showTest(num) {
     cross_scheme: '8.5 Кросс-схема: одно-БПФ vs угловой спектр (4× апсемплинг), SSIM ≥ 0.99',
     boundary: '8.6 Граница применимости одно-БПФ-схемы',
     formats: '8.7 Форматы выходных PNG (128×128, 8 бит, режим L)',
+    netphys: '8.9 Физика внутри сети: один прямой проход, PCC совпадает с metrics.json, '
+           + 'градиент доходит до U-Net через K шагов физического слоя',
   };
   body += `<div class="formula">${titles[key] || ''}</div>`;
   if (key === 'parseval' && t.parseval_rows) {
@@ -414,8 +421,12 @@ function showTest(num) {
             `${((D.manifest.constants.zs_mm[0] / D.manifest.constants.z_crit_mm - 1) * 100).toFixed(2)} % — ` +
             `штатная ситуация, требующая контроля (п. 4.5.2).</div>`;
   }
-  $('#modal-title').textContent = `Тест ${num}`;
-  $('#modal-body').innerHTML = body;
+  openModal(`Тест ${num}`, body);
+}
+
+function openModal(title, html) {
+  $('#modal-title').textContent = title;
+  $('#modal-body').innerHTML = html;
   $('#modal').classList.remove('hidden');
 }
 
@@ -442,9 +453,8 @@ function renderTargets() {
   }
   const row = D.manifest.file_metrics[S.variant][S.plane];
   $('#target-caption').innerHTML =
-    `Плоскость <b>${S.plane + 1}</b>: z = ${row.z_mm.toFixed(1)} мм, Δx′ = ${(D.manifest.constants.out_dx[S.plane] * 1e6).toFixed(4)} мкм, ` +
-    `страница ${D.manifest.constants.page_mm[S.plane].toFixed(4)} мм. ` +
-    `PCC = <b>${fmt(row.pcc)}</b>, SSIM = <b>${fmt(row.ssim)}</b> (${S.variant.toUpperCase()}).`;
+    `z${S.plane + 1} = <b>${row.z_mm.toFixed(1)} мм</b> · Δx′ ${(D.manifest.constants.out_dx[S.plane] * 1e6).toFixed(3)} мкм · ` +
+    `PCC <b>${fmt(row.pcc)}</b> · SSIM <b>${fmt(row.ssim)}</b>`;
 }
 
 function setPlane(i) {
@@ -489,9 +499,8 @@ function renderDoe() {
   drawHistogram(codes, D.phase[S.variant]);
   const ph = D.phase[S.variant];
   $('#doe-note').innerHTML =
-    `float: [${Math.min(...[]) || fmt(Math.min.apply(null, ph), 3)}, ${fmt(Math.max.apply(null, ph), 3)}] рад<br>` +
-    `8 бит: −π…+π, δ = ${(2 * Math.PI / 255).toFixed(5)} рад<br>` +
-    `уровней занято: ${new Set(codes).size}`;
+    `φ ∈ [${fmt(Math.min.apply(null, ph), 2)}, ${fmt(Math.max.apply(null, ph), 2)}] рад<br>` +
+    `δ = ${(2 * Math.PI / 255).toFixed(4)} рад · кодов ${new Set(codes).size}/256`;
 }
 
 function drawHistogram(codes, phf) {
@@ -1076,8 +1085,8 @@ function renderPhysics() {
   const c = D.manifest.constants;
   const rows = D.manifest.control_table;
   $('#crit-note').innerHTML =
-    `z<sub>crit</sub> = NΔx²/λ = <b>${c.z_crit_mm.toFixed(4)} мм</b>; z₁ = ${c.zs_mm[0].toFixed(1)} мм → запас ` +
-    `<span style="color:#ffb347">${((c.zs_mm[0] / c.z_crit_mm - 1) * 100).toFixed(2)} %</span> (штатная ситуация, п. 4.5.2)`;
+    `z<sub>crit</sub> = <b>${c.z_crit_mm.toFixed(3)} мм</b> · запас z₁ ` +
+    `<span style="color:#ffb347">${((c.zs_mm[0] / c.z_crit_mm - 1) * 100).toFixed(2)} %</span>`;
   drawCrit();
   drawLens();
   // таблица 4.7
@@ -1223,6 +1232,9 @@ function wire() {
     $$('.variant-switch button').forEach(x => x.classList.toggle('active', x === b));
     refreshAll();
   });
+  // таблица 4.7 в модальном окне (панель 8)
+  const pm = $('#phys-modal');
+  if (pm) pm.onclick = () => openModal('Таблица 4.7 — расчётные параметры', $('#phys-table').innerHTML);
   // ДОЭ
   $('#doe-quant').onchange = e => { S.quant = e.target.checked; renderDoe(); };
   $('#doe-flash').onclick = () => { S.flash = 1; renderDoe(); };
@@ -1278,7 +1290,90 @@ function wire() {
     if (e.key === 'g' || e.key === 'G') $$('.variant-switch button')[1].click();
     if (e.key === 't') toggleTour();
   });
-  window.addEventListener('resize', () => { renderPlanes(); drawHistogram(phaseCodes(), D.phase[S.variant]); renderPhysics(); renderMetrics(false); });
+  window.addEventListener('resize', () => { renderPlanes(); drawHistogram(phaseCodes(), D.phase[S.variant]); renderPhysics(); renderMetrics(false); drawStepsCurve(D.manifest.phys_steps); });
+}
+
+/* --------------------------------- физика внутри сети: шаги K (панель 2) */
+function renderPhysSteps() {
+  const row = $('#steps-row');
+  if (!row) return;
+  if (!D.physSteps || !D.physSteps.length) { $('#phys-steps').style.display = 'none'; return; }
+  const nFrames = D.physSteps.length / (N * N);
+  const meta = (D.manifest.phys_steps || []);
+  const total = D.manifest.phys_total || 0;
+  S.physStep = Math.max(0, Math.min(S.physStep, nFrames - 1));
+  row.innerHTML = '';
+  for (let i = 0; i < nFrames; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'step-cell' + (i === S.physStep ? ' active' : '');
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 96;
+    drawScaled(cv.getContext('2d'), phaseCanvas(D.physSteps, i * N * N), 96, 96);
+    const cap = document.createElement('span');
+    const pcc = meta[i] ? meta[i].pcc.toFixed(3) : '—';
+    const kk = meta[i] && meta[i].step !== undefined ? meta[i].step : i;
+    cap.innerHTML = `${i === 0 ? 'U-Net' : (i === nFrames - 1 ? `K=${total} · 8 бит` : `K=${kk}`)}<b>${pcc}</b>`;
+    cell.appendChild(cv);
+    cell.appendChild(cap);
+    cell.onclick = () => { S.physStep = i; renderPhysSteps(); };
+    row.appendChild(cell);
+  }
+  drawStepsCurve(meta);
+  const p = $('#steps-probe');
+  if (p) {
+    const m = meta[S.physStep];
+    const kk = m && m.step !== undefined ? m.step : S.physStep;
+    p.innerHTML = m
+      ? `шаг физики K = <b>${kk}</b> / ${total || '—'} · PCC <b>${m.pcc.toFixed(4)}</b>` +
+        (m.per_plane ? ` · плоскости ${m.per_plane.map(v => v.toFixed(3)).join(' · ')}` : '')
+      : '';
+  }
+}
+
+/* кривая качества по шагам физики — клик/перетаскивание выбирает кадр */
+function drawStepsCurve(meta) {
+  const cv = $('#steps-curve');
+  if (!cv || !meta || !meta.length) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth || 400, h = 58;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const vals = meta.map(m => m.pcc);
+  const v0 = Math.min(...vals) - 0.01, v1 = Math.max(...vals) + 0.01;
+  const X = i => 2 + (w - 4) * (meta.length > 1 ? i / (meta.length - 1) : 0.5);
+  const Y = v => h - 12 - (h - 20) * ((v - v0) / (v1 - v0 || 1));
+  ctx.beginPath();
+  vals.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)));
+  const grad = ctx.createLinearGradient(0, 0, w, 0);
+  grad.addColorStop(0, 'rgba(122,162,255,.25)');
+  grad.addColorStop(0.15, 'rgba(122,162,255,.9)');
+  grad.addColorStop(1, '#4dd6c1');
+  ctx.lineWidth = 1.6; ctx.strokeStyle = grad; ctx.stroke();
+  ctx.lineTo(X(vals.length - 1), h - 2); ctx.lineTo(X(0), h - 2); ctx.closePath();
+  ctx.fillStyle = 'rgba(122,162,255,.10)'; ctx.fill();
+  // маркер выбранного кадра
+  const i = Math.min(S.physStep, vals.length - 1);
+  ctx.beginPath(); ctx.arc(X(i), Y(vals[i]), 3.2, 0, Math.PI * 2);
+  ctx.fillStyle = '#4dd6c1'; ctx.fill();
+  ctx.strokeStyle = 'rgba(77,214,193,.35)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(X(i), 2); ctx.lineTo(X(i), h - 2); ctx.stroke();
+  // подписи начала и конца
+  ctx.font = '9px ui-monospace, monospace'; ctx.fillStyle = 'rgba(190,200,215,.7)';
+  ctx.fillText(vals[0].toFixed(3), 3, 9);
+  const last = vals[vals.length - 1].toFixed(3);
+  ctx.fillText(last, w - ctx.measureText(last).width - 3, Y(vals[vals.length - 1]) - 4);
+  // скраб
+  const pick = ev => {
+    const r = cv.getBoundingClientRect();
+    const t = Math.max(0, Math.min(1, (ev.clientX - r.left - 2) / (r.width - 4)));
+    S.physStep = Math.round(t * (meta.length - 1));
+    renderPhysSteps();
+  };
+  cv.style.cursor = 'pointer';
+  cv.onpointerdown = ev => { cv.setPointerCapture(ev.pointerId); pick(ev); };
+  cv.onpointermove = ev => { if (ev.buttons) pick(ev); };
 }
 
 /* ------------------------------------------------ A8: деградация битности */
@@ -1376,14 +1471,13 @@ async function main() {
   renderMeasureUI();
   renderTrain();
   renderPhysics();
+  renderPhysSteps();
   wire();
   $('#footer-info').innerHTML =
-    `собрано ${D.manifest.created} · seed ${D.manifest.constants.seed} · ` +
-    `данные: ${Object.keys(D.manifest.files).length} файлов / ` +
-    `${(Object.values(D.manifest.files).reduce((a, b) => a + b, 0) / 1e6).toFixed(2)} МБ · офлайн, без сервера`;
+    `seed ${D.manifest.constants.seed} · офлайн`;
   // кнопка авто-тура
   document.body.insertAdjacentHTML('beforeend',
-    `<button class="tour-btn" onclick="toggleTour()">▶ авто-тур (T)</button>`);
+    `<button class="tour-btn" onclick="toggleTour()" title="авто-тур по сценарию (T)">▶ тур</button>`);
   requestAnimationFrame(tick);
 }
 // глобальные ссылки для инлайновых обработчиков (index.html) и авто-проверок

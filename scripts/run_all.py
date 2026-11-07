@@ -50,28 +50,33 @@ def main() -> int:
         run([PY, "-m", "hdoe.corpus"], "этап 0: корпус объектов (data/corpus.npy)")
 
     if not args.skip_train and not args.eval_only:
-        cmd = [PY, "scripts/train.py", "--out", C.PATHS.out,
+        # Обучение: дистилляция учительских масок GS в U-Net. Сквозное
+        # дообучение физики (стадия 2) в этом рецепте отключено (--steps 0):
+        # эксперименты показали, что оно ухудшает метрики. Физика работает
+        # внутри сети на инференсе (K шагов, см. hdoe/netphys.py).
+        cmd = [PY, "scripts/train_gpu.py", "--out", C.PATHS.out,
                "--width", "48", "--depth", "5", "--distill-steps", "1600",
-               "--phys-w", "0.4", "--e2e-steps", "150", "--e2e-lr", "1e-5",
-               "--teachers", "16", "--gs-iters", "300", "--gs-restarts", "2",
-               "--teacher-polish", "500"]
+               "--steps", "0", "--geom-only", "--teachers", "6",
+               "--gs-iters", "250", "--gs-restarts", "2",
+               "--val-every", "200", "--snap-every", "200",
+               "--phys-steps", "2048", "--phys-gain", "0.35"]
         if args.quick:
             cmd += ["--smoke"]
-        run(cmd, "этап 3: обучение сети (дистилляция GS + сквозная доводка)")
+        run(cmd, "этап 3: обучение сети (дистилляция учительских масок GS)")
 
-    # полный режим — тот же рецепт, которым получены сдаваемые метрики
-    ev = [PY, "scripts/evaluate.py", "--out", C.PATHS.out]
-    ev += (["--gs-iters", "80", "--gs-restarts", "1", "--gs-refine", "0",
-            "--refine", "0"] if args.quick else
-           ["--gs-iters", "300", "--gs-restarts", "3", "--gs-refine", "300",
-            "--gs-it-hop", "300", "--refine", "800", "--refine-lr", "2.5e-2",
-            "--refine-restarts", "2", "--refine-cycles", "2", "--init", "nn+gs"])
+    # фаза = один прямой проход сети с физикой внутри (без внешней доводки)
+    ev = [PY, "scripts/evaluate.py", "--out", C.PATHS.out, "--pipeline", "netphys",
+          "--gs-iters", "250", "--gs-restarts", "3", "--gs-refine", "100"]
+    if args.quick:
+        ev = [PY, "scripts/evaluate.py", "--out", C.PATHS.out, "--pipeline", "netphys",
+              "--gs-iters", "80", "--gs-restarts", "1", "--gs-refine", "0"]
     if args.ckpt:
         ev += ["--ckpt", args.ckpt]
-    run(ev, "этап 4: оценка, GS-бейзлайн, DOE.png + recon_1..4.png + metrics.json")
+    run(ev, "этап 4: оценка (сеть с физикой внутри), GS-бейзлайн, DOE.png + metrics.json")
+    run([PY, "scripts/sweep_phys.py"], "этап 4б: абляция K — вклад физики внутри сети")
 
     if not args.skip_tests:
-        run([PY, "tests/test_all.py"], "этапы 1–2: верификация (тесты 8.1–8.7)")
+        run([PY, "tests/test_all.py"], "этапы 1–2: верификация (тесты 8.1–8.9)")
 
     run([PY, "scripts/build_dashboard.py"], "этап 5: сборка бандла дашборда")
     run([PY, "scripts/make_figures.py"], "этап 6: визуализации для отчёта")

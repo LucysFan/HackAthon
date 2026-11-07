@@ -171,13 +171,13 @@ def build_video(out_path: str, fps: int) -> str:
            font=F_MONO, fill=FG)
     for i, a in enumerate(tg):
         f.img((28 + i * 150, 300), to_img(a, 1), f"цель {i + 1}")
-    f.text((28, 470), f"NN + доводка: PCC {mean.get('pcc', 0):.4f} · SSIM {mean.get('ssim', 0):.4f}",
+    f.text((28, 470), f"сеть + физика внутри: PCC {mean.get('pcc', 0):.4f} · SSIM {mean.get('ssim', 0):.4f}",
            font=F_H2, fill=NN)
     f.text((28, 502), f"GS: PCC {gsm.get('pcc', 0):.4f} · SSIM {gsm.get('ssim', 0):.4f}",
            font=F_H2, fill=GS)
     f.text((28, 534), f"сеть как есть: PCC {nn_only.get('pcc', 0):.4f} · SSIM {nn_only.get('ssim', 0):.4f}",
            font=F_TXT, fill=DIM)
-    f.text((28, 570), f"тесты 8.1–8.7: {t.get('summary', {}).get('passed', 0)}/"
+    f.text((28, 570), f"тесты 8.1–8.9: {t.get('summary', {}).get('passed', 0)}/"
            f"{t.get('summary', {}).get('total', 0)} · seed {t.get('summary', {}).get('seed', C.SEED)}",
            font=F_TXT, fill=FG)
     f.text((28, 640), "офлайн-дашборд: dashboard/index.html (двойной клик) · этот файл — резервная запись",
@@ -250,7 +250,7 @@ def build_video(out_path: str, fps: int) -> str:
     for k in range(12):
         g = (k + 1) / 12
         f = Frame("Панель 5. Метрики (основной протокол, из квантованной фазы)",
-                  "PCC и SSIM по плоскостям: NN + доводка vs GS", "A4")
+                  "PCC и SSIM по плоскостям: сеть с физикой внутри vs GS", "A4")
         vals, labs, cols = [], [], []
         for i, r in enumerate(rows):
             vals += [r["pcc"] * g, r["ssim"] * g]
@@ -266,7 +266,7 @@ def build_video(out_path: str, fps: int) -> str:
                font=F_H2, fill=NN)
         f.text((700, 462), f"среднее GS: PCC {gsm.get('pcc', 0):.4f} / SSIM {gsm.get('ssim', 0):.4f}",
                font=F_H2, fill=GS)
-        f.text((700, 494), f"сеть без доводки: PCC {nn_only.get('pcc', 0):.4f} / "
+        f.text((700, 494), f"только U-Net (без физики): PCC {nn_only.get('pcc', 0):.4f} / "
                            f"SSIM {nn_only.get('ssim', 0):.4f}", font=F_TXT, fill=DIM)
         emit(f.im, 1)
 
@@ -300,7 +300,7 @@ def build_video(out_path: str, fps: int) -> str:
     steps = [r.get("step", 0) for r in log if r.get("stage") == "distill"]
     pccs = [r.get("val_pcc", 0) for r in log if r.get("stage") == "distill"]
     for k in range(24):
-        f = Frame("Панель 7. Обучение", "дистилляция учительских масок + сквозная доводка", "A7")
+        f = Frame("Панель 7. Обучение", "дистилляция учительских масок (GS) → U-Net", "A7")
         n = max(2, int((k + 1) / 24 * len(steps)))
         xs = np.linspace(120, 1120, n)
         ys = np.asarray(pccs[:n])
@@ -316,8 +316,8 @@ def build_video(out_path: str, fps: int) -> str:
         emit(f.im, 1)
 
     # ------------------------------------------------------------ 8. физика
-    f = Frame("Панель 8. Физика и верификация", "граница применимости, тест линзы, тесты 8.1–8.7",
-              "8.1–8.7")
+    f = Frame("Панель 8. Физика и верификация", "граница применимости, тест линзы, тесты 8.1–8.9",
+              "8.1–8.9")
     ct = m.get("control_table") or []
     if ct:
         hdr = ["№", "z, мм", "Δx′, мкм", "страница, мм", "s = Δx′/Δx", "чирп у края, π", "запас, %"]
@@ -351,7 +351,7 @@ def build_video(out_path: str, fps: int) -> str:
     # ------------------------------------------------------------- финал
     f = Frame("Итог", "", "")
     f.d.text((28, 110), "Результат", font=_font(34, True), fill=FG)
-    d = [["метрика", "NN + доводка", "GS (200×3)", "сеть как есть"]]
+    d = [["метрика", "сеть + физика", "GS (250×3)", "только U-Net"]]
     d.append(["PCC (среднее)", f"{mean.get('pcc', 0):.4f}", f"{gsm.get('pcc', 0):.4f}",
               f"{nn_only.get('pcc', 0):.4f}"])
     d.append(["SSIM (среднее)", f"{mean.get('ssim', 0):.4f}", f"{gsm.get('ssim', 0):.4f}",

@@ -206,6 +206,62 @@ def main() -> int:
         sizes[f"zprobe_{tag}.f32.bin"] = write_f32(os.path.join(DATA, f"zprobe_{tag}.f32.bin"),
                                                    curves)
 
+    phys_steps_rows, phys_total = None, 0
+
+    # ------------------------------- физика внутри сети (панель 2, «шаги K»)
+    # Предпросчёт эволюции фазы по шагам дифференцируемого физического слоя:
+    # «выход U-Net → K шагов физики → 8 бит». Кадры берутся равномерно по K.
+    try:
+        from hdoe import netphys as NPH
+        from hdoe.model import build_net
+        ck_path = os.path.join(out_dir, "best.pt")
+        ck = (torch.load(ck_path, map_location="cpu", weights_only=False)
+              if os.path.exists(ck_path) else None)
+        if ck is not None and "arch" in ck:
+            net = build_net(ck["arch"])
+            net.load_state_dict(ck["model"])
+            net.eval()
+            pk = ck.get("pack") or {}
+            kk = int(pk.get("steps", 64))
+            gain = float(pk.get("gain", 0.25))
+            schedule = str(pk.get("schedule", "decay"))
+            gain_end = float(pk.get("gain_end", 0.05))
+            q_t = torch.as_tensor(np.asarray(targets, dtype=np.float32))[None]
+            ref = NPH.PhysicsRefiner(steps=kk, gain=gain, schedule=schedule,
+                                     gain_end=gain_end, learnable=False)
+            ref._track = []
+            ref._track_k = []
+            with torch.enable_grad():
+                phi0 = net(q_t).detach()
+                ref(phi0, q_t)
+            traj = ref._track
+            ks = ref._track_k
+            ref._track = None
+            ref._track_k = None
+            picks = sorted(set(int(round(v)) for v in
+                               np.linspace(0, len(traj) - 1, min(48, len(traj)))))
+            st = np.stack([np.squeeze(np.asarray(
+                P.encode8bit(traj[j][0, 0]), dtype=np.uint8)) for j in picks])
+            sizes["phys_steps.u8.bin"] = write_u8(os.path.join(DATA, "phys_steps.u8.bin"), st)
+            # метрики каждого сохраняемого кадра (подписи на дашборде)
+            rows = []
+            tg = np.asarray(targets)
+            for jj, code in zip(picks, st):
+                phi_ = np.asarray(P.decode8bit(code), dtype=np.float32)
+                mrow = []
+                for i, z in enumerate(C.ZS):
+                    Ii = P.normalize01(P.propagate(
+                        torch.as_tensor(phi_)[None, None], z)[0, 0].numpy())
+                    mrow.append(float(M.pcc(tg[i], Ii)))
+                rows.append(dict(step=int(ks[jj]) if jj < len(ks) else int(jj),
+                                 pcc=float(np.mean(mrow)), per_plane=mrow))
+            phys_steps_rows = rows
+            phys_total = int(kk)
+            print(f"  шаги физики: K={kk}, кадров в дашборде {len(st)}, "
+                  f"PCC {rows[0]['pcc']:.4f} → {rows[-1]['pcc']:.4f}")
+    except Exception as exc:                                    # noqa: BLE001
+        print("шаги физики: не удалось предпосчитать —", exc)
+
     # ------------------------------------------------ деградация битности (A8)
     bd = {}
     for tag, phi in phases.items():
@@ -276,6 +332,11 @@ def main() -> int:
                       note=("кадры z ≥ z_crit — одно-БПФ-схема Френеля; кадры z < z_crit "
                             "(п. 4.5.3) — band-limited угловой спектр")),
         bit_levels=[8, 6, 4, 2],
+        phys_steps=phys_steps_rows,
+        phys_total=phys_total,
+        phys_pack=dict((torch.load(os.path.join(out_dir, "best.pt"), map_location="cpu",
+                                   weights_only=False).get("pack") or {})
+                       if os.path.exists(os.path.join(out_dir, "best.pt")) else {}),
     )
     json.dump(manifest, open(os.path.join(DATA, "manifest.json"), "w"), indent=1,
               ensure_ascii=False)
@@ -309,7 +370,7 @@ def write_js_bundle(manifest: dict) -> int:
     entries = ["targets", "phase_nn", "phase_gs", "doe_nn", "doe_gs",
                "zstack_nn", "zstack_gs", "recon_nn", "recon_gs",
                "ssim_map_nn", "ssim_map_gs", "zgrid", "train_masks", "train_recon",
-               "bitdepth_nn", "bitdepth_gs", "zprobe_nn", "zprobe_gs"]
+               "bitdepth_nn", "bitdepth_gs", "zprobe_nn", "zprobe_gs", "phys_steps"]
     parts = []
     for key in entries:
         for cand in (f"{key}.u8.bin", f"{key}.f32.bin"):

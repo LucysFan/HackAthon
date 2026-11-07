@@ -104,3 +104,57 @@ def evaluate_phase(phi_q: np.ndarray, targets01: np.ndarray, zs=C.ZS) -> list[di
                          pcc_raw=M.pcc(targets01[i], I),
                          ssim_raw=M.ssim(targets01[i], I)))
     return rows
+
+
+# --------------------------------------------------------------------- батчевый GS
+def gs_batch(targets: torch.Tensor, zs=C.ZS, iters: int = 200, restarts: int = 1,
+             seed: int = 0, quantize: bool = True, dtype=torch.float32) -> dict:
+    """GS сразу для набора независимых задач (GPU-путь).
+
+    ``targets``: [B,4,N,N] — B независимых четвёрок. Все B задач и все
+    ``restarts`` перезапусков идут одним батчем: пропагатор векторизован по
+    батчу, поэтому на GPU стоимость почти не растёт с B.
+
+    Возвращает dict(phi [B,1,N,N], best_idx, scores [B,restarts]).
+    """
+    t = torch.as_tensor(targets, dtype=dtype)
+    if t.dim() == 3:
+        t = t[None]
+    b = t.shape[0]
+    t = t / t.flatten(1).max(dim=1).values.view(b, 1, 1, 1) + 1e-9
+    amp = torch.sqrt(torch.clamp(t, min=0))
+
+    g = torch.Generator(device="cpu").manual_seed(int(seed))
+    best_phi, best_scores = None, None
+    for r in range(restarts):
+        phi = (torch.rand(b, 1, C.N, C.N, generator=g, dtype=dtype) * 2 * np.pi - np.pi)
+        phi = phi.to(t.device)
+        for _ in range(iters):
+            for i, z in enumerate(zs):
+                u = P.propagate_complex(phi, z)
+                u_p = amp[:, i:i + 1] * torch.exp(1j * torch.angle(u))
+                phi = torch.angle(P.propagate_adj(u_p, z))     # [B,1,N,N]
+            phi = torch.remainder(phi + np.pi, 2 * np.pi) - np.pi
+        q = phi
+        if quantize:
+            step = 2 * np.pi / 255.0
+            q = torch.round((phi + np.pi) / step) * step - np.pi
+        # оценка качества — векторно по всем задачам батча сразу
+        sc = torch.zeros(b, dtype=phi.dtype, device=phi.device)
+        for i, z in enumerate(zs):
+            Ii = P.propagate(q, z)[:, 0]                     # [B,N,N]
+            lo = Ii.flatten(1).amin(1).view(b, 1, 1)
+            hi = Ii.flatten(1).amax(1).view(b, 1, 1)
+            Ii = (Ii - lo) / (hi - lo + 1e-12)
+            ti = t[:, i]
+            a = Ii.flatten(1) - Ii.flatten(1).mean(1, keepdim=True)
+            bb = ti.flatten(1) - ti.flatten(1).mean(1, keepdim=True)
+            pcc_i = (a * bb).sum(1) / (a.norm(dim=1) * bb.norm(dim=1) + 1e-8)
+            sc = sc + pcc_i / len(zs)
+        if best_phi is None:
+            best_phi, best_sc = q.clone(), sc.clone()
+        else:
+            upd = (sc > best_sc)
+            best_phi[upd] = q[upd]
+            best_sc = torch.maximum(best_sc, sc)
+    return dict(phi=best_phi, scores=best_sc, restarts=restarts, iters=iters)

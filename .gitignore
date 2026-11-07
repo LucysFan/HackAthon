@@ -15,7 +15,7 @@ dashboard/data/*.bin
 # служебное
 tools/node_modules/
 experiments/_preview/
-outputs/train_masks/
+# снапшоты маски обучения нужны для панели 7 дашборда (8 файлов × 16 КБ)
 outputs/_*.npy
 experiments/_*.npy
 

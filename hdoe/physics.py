@@ -46,11 +46,21 @@ class _ChirpCache:
         self._d: dict = {}
 
     def get(self, z: float, device, dtype):
-        key = (round(z, 12), str(device), str(dtype))
+        """``dtype`` — желаемый комплексный тип результата (complex64/128).
+
+        Сетки считаются в действительном типе той же разрядности: на GPU
+        комплексные чирпы в float32 занимают в 2 раза меньше памяти, а
+        приведение выполняется один раз при создании кэша, а не на каждом
+        вызове пропагатора.
+        """
+        cdtype = dtype if dtype in (torch.complex64, torch.complex128) else _as_complex_dtype(
+            torch.empty(0, dtype=dtype))
+        rtype = torch.float32 if cdtype == torch.complex64 else torch.float64
+        key = (round(z, 12), str(device), str(cdtype))
         if key not in self._d:
-            (X, Y), (Xo, Yo, dxo) = _grid(z, device=device, dtype=dtype)
-            q_in = torch.exp(1j * torch.pi / (C.LAM * z) * (X ** 2 + Y ** 2))
-            q_out = torch.exp(1j * torch.pi / (C.LAM * z) * (Xo ** 2 + Yo ** 2))
+            (X, Y), (Xo, Yo, dxo) = _grid(z, device=device, dtype=rtype)
+            q_in = torch.exp(1j * torch.pi / (C.LAM * z) * (X ** 2 + Y ** 2)).to(cdtype)
+            q_out = torch.exp(1j * torch.pi / (C.LAM * z) * (Xo ** 2 + Yo ** 2)).to(cdtype)
             pref = cmath.exp(1j * C.K * z) / (1j * C.LAM * z) * (C.DX ** 2)
             self._d[key] = (q_in, q_out, pref)
         return self._d[key]
@@ -113,6 +123,56 @@ def propagate_complex(phi: torch.Tensor, z: float, n: int | None = None) -> torc
     g = u0 * q_in
     f = torch.fft.fftshift(torch.fft.fft2(torch.fft.ifftshift(g, dim=(-2, -1))), dim=(-2, -1))
     return pref * q_out * f
+
+
+# ---------------------------------------------------------------- быстрый путь
+def _fast_chirps(z: float, device, dtype):
+    """Кэш чирпов сразу в рабочем комплексном dtype: на GPU это в 2 раза меньше
+    памяти и одна операция приведения вместо двух на каждый вызов."""
+    return _CHIRP.get(z, device, dtype)
+
+
+def propagate_fast(phi: torch.Tensor, z: float) -> torch.Tensor:
+    """Одно-БПФ-Френель без лишних приведений типов (GPU-путь).
+
+    Отличие от ``propagate`` — только в отсутствии повторных ``.to(complex)``:
+    чирпы кэшируются в том же комплексном типе, что и поле. Численно
+    идентично ``propagate`` (проверяется тестом).
+    """
+    _check_z(z)
+    if phi.dim() == 2:
+        phi = phi[None, None]
+    elif phi.dim() == 3:
+        phi = phi[None]
+    cdtype = _as_complex_dtype(phi)
+    q_in, q_out, pref = _fast_chirps(z, phi.device, cdtype)
+    g = torch.exp(1j * phi.to(cdtype)) * q_in
+    f = torch.fft.fftshift(torch.fft.fft2(torch.fft.ifftshift(g, dim=(-2, -1))),
+                           dim=(-2, -1))
+    return (pref * q_out * f).abs() ** 2
+
+
+def forward_model(phi: torch.Tensor, zs=None, fast: bool = True) -> torch.Tensor:
+    """[B,1,N,N] фаза → [B,P,N,N] интенсивности на всех z (P = len(zs))."""
+    zs = tuple(C.ZS if zs is None else zs)
+    fn = propagate_fast if fast else propagate
+    return torch.cat([fn(phi, z) for z in zs], dim=1)
+
+
+def forward_and_grad(phi: torch.Tensor, zs=None, targets: torch.Tensor | None = None,
+                     loss_fn=None) -> tuple:
+    """Физический прямой ход + градиент по фазе.
+
+    Если задан ``loss_fn`` (функция (I_planes, targets) → скаляр), градиент
+    вычисляется через autograd по физической модели — это и есть
+    «физика внутри сети» (differentiable model-based layer).
+    """
+    I = forward_model(phi, zs)
+    if loss_fn is None:
+        return I, None
+    loss = loss_fn(I, targets)
+    g, = torch.autograd.grad(loss, phi, create_graph=False)
+    return I, g
 
 
 def propagate(phi: torch.Tensor, z: float, n: int | None = None) -> torch.Tensor:

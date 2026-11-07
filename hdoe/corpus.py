@@ -224,13 +224,19 @@ class QuadDataset(Dataset):
 
     def __init__(self, corpus: np.ndarray, length: int = 4096, mode: str = "corpus",
                  fixed: np.ndarray | None = None, seed: int = C.SEED,
-                 augment: bool = True):
+                 augment: bool = True, geom_only: bool = False):
+        """``geom_only`` — только геометрические преобразования (без сдвига
+        контраста/яркости и без поканальной фотометрии). Нужно, когда целевые
+        изображения «плотные» (объект занимает >40 % кадра): фотометрическая
+        аугментация делает обучение несовместимым с реальными целями —
+        проверено: валидация падала на 0,1 PCC."""
         self.corpus = corpus
         self.length = length
         self.mode = mode
         self.fixed = fixed
         self.seed = seed
         self.do_augment = augment
+        self.geom_only = bool(geom_only)
 
     def __len__(self) -> int:
         return self.length
@@ -243,10 +249,29 @@ class QuadDataset(Dataset):
             ids = rng.choice(len(self.corpus), size=C.N_PLANES, replace=False)
             q = torch.as_tensor(self.corpus[ids], dtype=torch.float32) / 255.0
         if self.do_augment:
-            q = augment(q, rng)
+            q = geom_augment(q, rng) if self.geom_only else augment(q, rng)
         else:
             q = q.clone()
         return equalize_energy_t(q)
+
+
+def geom_augment(q: torch.Tensor, rng) -> torch.Tensor:
+    """Только геометрические аугментации четвёрки (сдвиг, отражения, поворот 90°).
+
+    Все четыре канала получают ОДНО и то же преобразование, поэтому пара
+    «цели ↔ маска» остаётся корректной, а фотометрия целей не меняется.
+    """
+    q = q.clone()
+    dy, dx = int(rng.integers(-8, 9)), int(rng.integers(-8, 9))
+    q = torch.roll(q, shifts=(dy, dx), dims=(-2, -1))
+    if rng.random() < 0.5:
+        q = torch.flip(q, dims=(-1,))
+    if rng.random() < 0.5:
+        q = torch.flip(q, dims=(-2,))
+    k = int(rng.integers(0, 4))
+    if k:
+        q = torch.rot90(q, k, dims=(-2, -1))
+    return q
 
 
 def validation_quads(corpus: np.ndarray, n: int = 4, seed: int = C.SEED + 12345,

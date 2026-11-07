@@ -9,6 +9,7 @@
   8.6 Граница применимости (assert, предупреждение при запасе < 1 %)
   8.7 Форматы выходных PNG
   8.8 Сводка результатов в JSON (публикуется в отчёте и на дашборде)
+  8.9 Физика внутри сети (один прямой проход, градиент через физический слой)
 """
 from __future__ import annotations
 
@@ -37,7 +38,8 @@ RESULTS: dict = {}
 _KEYMAP = {fn: key for fn, key in (
     ("test_parseval", "parseval"), ("test_lens", "lens"), ("test_quantization", "quantization"),
     ("test_gradient", "gradient"), ("test_cross_scheme", "cross_scheme"),
-    ("test_boundary", "boundary"), ("test_formats", "formats"))}
+    ("test_boundary", "boundary"), ("test_formats", "formats"),
+    ("test_netphys", "netphys"))}
 
 
 def _rec(name: str, ok: bool, **kw):
@@ -84,9 +86,15 @@ def test_lens() -> bool:
         mean_val = (I * mask).sum() / mask.sum()
         peak_idx = int(torch.argmax(I))
         ratio = float(center / mean_val)
-        good = bool(peak_idx == (C.N // 2) * C.N + C.N // 2 and ratio >= 100)
+        # идеальная линза собирает почти всю энергию в центральный пиксель, поэтому
+        # centre/mean неограниченно велико и как число неинформативно — приводим
+        # также долю энергии в окне 3×3 (устойчивая характеристика)
+        c = C.N // 2
+        e_win = float(I[c - 1:c + 2, c - 1:c + 2].sum() / I.sum())
+        good = bool(peak_idx == c * C.N + c and ratio >= 100 and e_win > 0.95)
         rows.append(dict(z_mm=z * 1e3, peak_row=peak_idx // C.N, peak_col=peak_idx % C.N,
-                         center=float(center), mean=float(mean_val), ratio=ratio, ok=good))
+                         center=float(center), mean=float(mean_val), ratio=ratio,
+                         energy_win3=float(e_win), ok=good))
         ok &= good
     RESULTS["lens_rows"] = rows
     # сохраняем профиль для дашборда (панель «Физика»)
@@ -94,7 +102,8 @@ def test_lens() -> bool:
     phi = -torch.pi * (X ** 2 + Y ** 2) / (C.LAM * z)
     prof = P.propagate(phi, z)[0, 0, C.N // 2].numpy()
     RESULTS["lens_profile"] = prof.tolist()
-    return _rec("lens", ok, min_ratio=min(r["ratio"] for r in rows))
+    return _rec("lens", ok, min_ratio=min(r["ratio"] for r in rows),
+                min_energy_win3=min(r["energy_win3"] for r in rows))
 
 
 # ------------------------------------------------------------------ 8.3 Квантование
@@ -234,11 +243,77 @@ def test_formats() -> bool:
     return _rec("formats", ok, n_files=len(files))
 
 
+# ------------------------------------------------ 8.9 физика ВНУТРИ сети
+def test_netphys() -> bool:
+    """Один прямой проход сети (физика как слои) даёт заявленные метрики.
+
+    Проверяется: (1) фаза получается прямым проходом, без классических
+    итераций на инференсе; (2) PCC совпадает с metrics.json; (3) градиент
+    физического лосса доходит до весов U-Net через K шагов физики.
+    """
+    print("8.9 Физика внутри сети (один прямой проход)")
+    ckpt = os.path.join(C.PATHS.out, "best.pt")
+    if not os.path.exists(ckpt):
+        return _rec("netphys", False, reason="нет best.pt")
+    from PIL import Image
+    from hdoe import netphys as NPH
+    from hdoe.model import build_net
+    ck = torch.load(ckpt, map_location="cpu", weights_only=False)
+    if "arch" not in ck:
+        return _rec("netphys", False, reason="чекпоинт без arch")
+    net = build_net(ck["arch"])
+    net.load_state_dict(ck["model"])
+    net.eval()
+    pk = ck.get("pack") or {}
+    steps = int(pk.get("steps", 0))
+    if steps <= 0:
+        return _rec("netphys", False, reason="в чекпоинте нет шагов физики")
+    pipe = NPH.PhysicsInNet(net, steps=steps, gain=float(pk.get("gain", 0.25)),
+                            quantize=True, learnable=False)
+    t_row = []
+    for i in range(1, 5):
+        im = Image.open(os.path.join(C.PATHS.targets, f"target_{i}.png")).convert("L")
+        t_row.append(np.asarray(im, dtype=np.float32) / 255.0)
+    tg = torch.as_tensor(np.stack(t_row), dtype=torch.float32)
+    t0 = time.time()
+    with torch.no_grad():
+        I, phi = pipe(tg[None])
+    dt = time.time() - t0
+    codes = np.squeeze(np.asarray(P.encode8bit(phi[0, 0])))
+    phi_q = P.decode8bit(codes)
+    pccs, ssims = [], []
+    for i, z in enumerate(C.ZS):
+        rec = P.normalize01(P.propagate(torch.as_tensor(phi_q)[None, None], z)[0, 0].numpy())
+        pccs.append(M.pcc(np.asarray(tg[i]), rec))
+        ssims.append(M.ssim(np.asarray(tg[i]), rec))
+    pcc_mean, ssim_mean = float(np.mean(pccs)), float(np.mean(ssims))
+    # сверка с сохранёнными метриками
+    ref_pcc = None
+    mp = os.path.join(C.PATHS.out, "metrics.json")
+    if os.path.exists(mp):
+        ref_pcc = float(json.load(open(mp))["mean"]["pcc"])
+    match = ref_pcc is None or abs(ref_pcc - pcc_mean) < 5e-3
+    # градиент через физический слой доходит до U-Net
+    net.train()
+    for prm in net.parameters():
+        prm.requires_grad_(True)
+    pipe.train()
+    I_g, _ = pipe(tg[None])
+    loss_g = NPH.physical_loss(I_g, tg[None])
+    loss_g.backward()
+    gnorm = float(sum(float(p.grad.abs().sum()) for p in net.parameters() if p.grad is not None))
+    net.zero_grad(set_to_none=True)
+    ok = bool(pcc_mean >= 0.80 and match and gnorm > 0 and codes.dtype == np.uint8)
+    return _rec("netphys", ok, steps=steps, pcc=pcc_mean, ssim=ssim_mean,
+                ref_pcc=ref_pcc if ref_pcc is not None else -1.0,
+                grad_norm=gnorm, seconds=dt)
+
+
 def main() -> int:
     print(f"Верификация комплекса, seed={C.SEED}\n")
     t0 = time.time()
     checks = [test_parseval, test_lens, test_quantization, test_gradient,
-              test_cross_scheme, test_boundary, test_formats]
+              test_cross_scheme, test_boundary, test_formats, test_netphys]
     passed = []
     for fn in checks:
         try:

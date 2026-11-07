@@ -211,3 +211,23 @@ footer{display:flex;justify-content:space-between;color:var(--muted);font-size:1
   .panel{grid-column:span 1 !important}
   .planes-grid{grid-template-columns:1fr 1fr}
 }
+
+/* --------------------------------- физика внутри сети: полоса шагов K */
+.phys-steps { margin-top: 10px; }
+.steps-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.step-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 6px; border-radius: 10px; cursor: pointer;
+  border: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.02);
+  transition: border-color .15s, transform .15s;
+}
+.step-cell:hover { border-color: rgba(120,180,255,.45); transform: translateY(-1px); }
+.step-cell.active { border-color: var(--nn); box-shadow: 0 0 0 1px var(--nn) inset; }
+.step-cell canvas { border-radius: 6px; image-rendering: pixelated; }
+.step-cell span { font-size: 10px; color: var(--dim); display: flex; gap: 4px; white-space: nowrap; }
+.step-cell b { color: var(--fg); font-weight: 600; }
+.steps-row { overflow-x: auto; padding-bottom: 4px; flex-wrap: nowrap; scrollbar-width: thin; }
+.steps-row::-webkit-scrollbar { height: 6px; }
+.steps-row::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+.steps-curve { width: 100%; height: 58px; display: block; margin: 4px 0 8px; }
+.phys-steps .plot-title { margin-bottom: 2px; }
