@@ -1,6 +1,6 @@
 {
  "schema": "hdoe/dashboard/1",
- "created": "2026-11-07T21:27:46",
+ "created": "2026-11-07T22:11:34",
  "constants": {
   "lam": 5.32e-07,
   "dx": 1e-05,
@@ -1096,11 +1096,10 @@
  "seed": 2026,
  "versions": {
   "python": "3.11.2",
-  "numpy": "2.2.6",
+  "numpy": "2.4.6",
   "torch": "2.15.0+cu132",
   "pillow": "13.0.0",
-  "scikit-image": "0.26.0",
-  "segmentation-models-pytorch": "0.6.0"
+  "scikit-image": "0.26.0"
  },
  "zprobe_pixels": [
   [
