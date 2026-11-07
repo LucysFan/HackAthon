@@ -1,0 +1,25 @@
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ------------------------------------------------------- крупные артефакты
+# корпус объектов пересоздаётся скриптом (python -m hdoe.corpus)
+data/corpus.npy
+# z-стопки дашборда пересобираются build_dashboard.py
+dashboard/data/*.bin
+# ВНИМАНИЕ: dashboard/data_bundle.js НЕ игнорируется — он нужен для открытия
+# index.html двойным кликом (офлайн-режим, п. 12.1 ТЗ).
+
+# служебное
+tools/node_modules/
+experiments/_preview/
+outputs/train_masks/
+outputs/_*.npy
+experiments/_*.npy
+
+# служебное
+.DS_Store
+*.log
+experiments/out/
