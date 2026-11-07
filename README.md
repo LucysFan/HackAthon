@@ -24,63 +24,173 @@ experiments/    численные эксперименты о пределах 
 ## 1. Установка
 
 ```bash
-python3 -m venv ../.venv            # или любой venv
-bash scripts/setup_env.sh           # ставит зависимости из requirements.txt
+bash scripts/setup_env.sh           # создаёт .venv внутри проекта и ставит requirements.txt
 ```
 
-Зависимости зафиксированы в `requirements.txt` (PyTorch, torchvision,
-numpy, Pillow, scikit-image, scipy, matplotlib, reportlab,
-segmentation-models-pytorch). GPU не требуется — весь конвейер проходит на CPU.
+Скрипт создаёт `HackAthon/.venv` сам (venv внутри проекта, п. 5.1.5) и ставит
+зависимости из `requirements.txt`: PyTorch, torchvision, numpy, Pillow,
+scikit-image, scipy, matplotlib, reportlab, segmentation-models-pytorch,
+imageio (+ffmpeg). GPU не обязателен: код сам выбирает устройство
+(cuda → mps → cpu), на CPU весь конвейер тоже проходит — медленнее.
+
+Дальше все команды запускаются **интерпретатором из venv** (в примерах ниже —
+`.venv/bin/python`; в Windows — `.venv\Scripts\python`). Активация
+(`source .venv/bin/activate`) не обязательна.
 
 ## 2. Полный прогон одной командой
 
 ```bash
-python scripts/run_all.py
+.venv/bin/python scripts/run_all.py
 ```
 
 Порядок (совпадает с этапами 1–6 ТЗ): объектные изображения → корпус →
-тесты 8.1–8.9 → обучение (дистилляция GS) → оценка и
-формирование файлов → сборка дашборда → рисунки и `report.pdf`.
+обучение (дистилляция GS, физика внутри сети) → оценка и формирование файлов
+→ абляция K → тесты 8.1–8.9 → сборка дашборда → рисунки и `report.pdf`.
 
-Быстрая проверка конвейера (мало шагов, без качества):
+Полезные варианты:
 
 ```bash
-python scripts/run_all.py --quick
+.venv/bin/python scripts/run_all.py --eval-only              # только оценка (нужен outputs/best.pt)
+.venv/bin/python scripts/run_all.py --skip-train             # без обучения, метрики из готового чекпоинта
+.venv/bin/python scripts/run_all.py --skip-train --skip-tests # быстро пересобрать артефакты и отчёт
+.venv/bin/python scripts/run_all.py --quick                  # смоук: мало шагов, качество не гарантируется
+```
+
+| режим | что делает | время (CPU, 1 поток на этап) |
+|---|---|---|
+| `--eval-only` | оценка (K = 2048) + абляция K + дашборд + рисунки + отчёт | ~11 мин |
+| `--skip-train` | то же + тесты 8.1–8.9 | ~13 мин |
+| полный | ещё и дистилляция 1600 шагов (≈22 мин) | ~35 мин |
+| `--quick` | укороченный прогон для проверки, что ничего не падает | ~3 мин |
+
+Те же режимы доступны кнопками в пульте (см. 2б) — он всего лишь вызывает
+`scripts/run_all.py`-этапы по отдельности и показывает лог.
+
+На GPU основной выигрыш даёт обучение и абляция K (шаги физики — это БПФ в
+autograd-цикле): полный прогон укладывается примерно в 6 мин.
+
+## 2б. Запуск задач прямо из дашборда (пульт)
+
+Если не хочется помнить команды — поднимите локальный пульт, он отдаёт тот же
+дашборд и умеет запускать этапы по кнопке:
+
+```bash
+.venv/bin/python scripts/serve_dashboard.py        # откроет http://127.0.0.1:8765
+```
+
+В шапке-подвале дашборда появляется кнопка **▶ запуск** (или клавиша `R`).
+В панели:
+
+* **сценарии одной кнопкой** — «Всё с нуля», «Пересчитать артефакты»,
+  «Только артефакты», «Быстрая проверка»;
+* **отдельные этапы** — цели из картинки, корпус, обучение, оценка, абляция K,
+  тесты, сборка дашборда, рисунки, отчёт, видео, проверка окружения;
+  на плитках видно, что уже посчитано и когда;
+* **приём своей картинки** — перетащить файл в панель: он станет
+  `data/source/object.png`, дальше жмёте «Цели из картинки» (и при желании
+  «Оценка и DOE.png»);
+* **живой лог** этапа с кнопками «стоп» и «копировать»; после пересборки бандла
+  панели сами перечитывают данные — числа на дашборде совпадают с новым
+  `metrics.json` без перезагрузки страницы.
+
+Пульт слушает только `127.0.0.1`, принимает лишь имена этапов из белого списка
+(никаких команд из браузера не выполняется) и стартует этапы интерпретатором
+`.venv` — тем же, что и остальные скрипты. При открытии `index.html` двойным
+кликом (офлайн, `file://`) пульт не появляется: дашборд остаётся статическим,
+как требует ТЗ. Проверка пульта:
+
+```bash
+node tools/smoke_runner.js          # API: состояние, отдача файлов, белый список
+node tools/smoke_runner_ui.js       # UI в jsdom: кнопка, панель, лог, статусы
 ```
 
 ## 3. Пошаговый запуск
 
+Каждый этап можно запускать отдельно — все команды от корня проекта, по одной
+(так проще искать ошибку и это же порядок этапов ТЗ):
+
 ```bash
-python -m hdoe.targets                 # 4 объектных изображения → data/targets
-python -m hdoe.corpus                  # корпус 1200 объектов → data/corpus.npy
-python tests/test_all.py               # тесты 8.1–8.9 → outputs/tests.json
-python scripts/train_gpu.py            # обучение сети (автовыбор GPU/CPU) → outputs/best.pt
-python scripts/evaluate.py             # DOE.png, recon_1..4.png, metrics.json (+GS)
-python scripts/sweep_phys.py           # кривая «сколько физики внутри сети» → phys_sweep.json
-python scripts/build_dashboard.py      # бандл дашборда → dashboard/data, data_bundle.js
-python scripts/make_figures.py         # figures/*.png
-python scripts/make_report.py          # outputs/report.pdf
-python scripts/make_demo_video.py      # outputs/demo_backup.mp4 (резервная запись демо)
-node tools/smoke_dashboard.js          # авто-проверка дашборда без браузера (36 проверок)
+PY=.venv/bin/python                     # в Windows: PY=.venv/Scripts/python
+
+$PY -m hdoe.targets                    # 4 объектных изображения → data/targets
+$PY -m hdoe.corpus                     # корпус объектов → data/corpus.npy (нужен для учителей)
+$PY tests/test_all.py                  # тесты 8.1–8.9 → outputs/tests.json
+$PY scripts/train_gpu.py               # обучение сети (авто cuda → mps → cpu) → outputs/best.pt
+$PY scripts/evaluate.py                # DOE.png, recon_1..4.png, metrics.json (+ GS-бейзлайн)
+$PY scripts/sweep_phys.py              # кривая «сколько физики внутри сети» → phys_sweep.json
+$PY scripts/build_dashboard.py         # бандл дашборда → dashboard/data, data_bundle.js
+$PY scripts/make_figures.py            # figures/*.png
+$PY scripts/make_report.py             # outputs/report.pdf
+$PY scripts/make_demo_video.py         # outputs/demo_backup.mp4 (резервная запись демо)
+cd tools && npm install && cd ..       # один раз: jsdom для авто-проверки дашборда
+node tools/smoke_dashboard.js          # авто-проверка дашборда без браузера (37 проверок)
 ```
 
-`scripts/refine_phase.py` (внешняя градиентная доводка фазы) сохранён только для
-сравнения: в сдаваемом решении он **не используется** — фаза берётся из одного
-прямого прохода сети, физика выполняется внутри неё.
+Дашборд — единственная часть на JS/Node; всё остальное — чистый Python.
+`node`/`npm` нужны только для авто-проверки и не требуются для запуска самого
+дашборда (он открывается двойным кликом).
+
+### Своя картинка вместо присланной
+
+```bash
+$PY scripts/setup_targets_from_image.py --src data/source/object.png
+# полезные ключи: --border N (поля), --no-crop (без авто-кропа), --no-invert (не инвертировать), --out DIR
+$PY scripts/evaluate.py --skip-gs      # быстрая проверка метрик на новых целях
+```
+
+Скрипт делает кроп по объекту, квадрат по центру, LANCZOS 128×128, инверсию
+полярности (объект — светлый на тёмном: без неё GS даёт 0.41 вместо 0.81) и
+выравнивает энергию четырёх плоскостей; превью — `figures/targets_preview.png`.
+
+### Своё обучение
+
+```bash
+$PY scripts/train_gpu.py --device auto --distill-steps 1600 --steps 0 --geom-only \
+    --teachers 6 --gs-iters 250 --gs-restarts 2 --val-every 200 --snap-every 200
+
+# ключи: --device auto|cuda|mps|cpu · --precision fp32|bf16|fp16 (по умолчанию fp32)
+#        --batch 8 · --lr 3e-4 · --threads N (ограничить потоки CPU)
+#        --phys-steps K (шагов физики внутри сети, пишется в pack чекпоинта)
+#        --phys-gain α, --phys-schedule decay|const, --phys-gain-end α_end
+#        --steps 0 (стадия 2 отключена — она ухудшала метрики) · --smoke (быстрая проверка)
+```
+
+Оценка с другим числом шагов физики (без переобучения):
+
+```bash
+$PY scripts/evaluate.py --pipeline netphys --phys-steps 1024 --phys-gain 0.35 --out /tmp/run1024
+```
 
 Рецепт, которым получены сдаваемые метрики (GPU ~6 мин, CPU ~25 мин):
 
 ```bash
 # 1) обучение: только дистилляция учительских масок GS (классика — лишь для данных)
-python scripts/train_gpu.py --distill-steps 1600 --steps 0 --geom-only \
-    --teachers 6 --gs-iters 250 --gs-restarts 2 --val-every 200 --snap-every 200
+$PY scripts/train_gpu.py --distill-steps 1600 --steps 0 --geom-only \
+    --teachers 6 --gs-iters 250 --gs-restarts 2 --val-every 200 --snap-every 200 \
+    --phys-steps 2048 --phys-gain 0.35
 # 2) чекпоинт несёт упаковку инференса: pack = {steps 2048, gain 0.35,
 #    schedule decay, gain_end 0.02} — столько шагов физики выполняется внутри
 #    сети за один прямой проход
-python scripts/evaluate.py --ckpt outputs/best.pt --pipeline netphys \
+$PY scripts/evaluate.py --ckpt outputs/best.pt --pipeline netphys \
     --gs-iters 250 --gs-restarts 3 --gs-refine 100
-python scripts/sweep_phys.py          # абляция K: 0 … 2048 шагов
+$PY scripts/sweep_phys.py             # абляция K: 0 … 2048 шагов
 ```
+
+### Если что-то пошло не так
+
+| симптом | что делать |
+|---|---|
+| `ModuleNotFoundError: torch` | запускать `.venv/bin/python`, а не системный `python3` (или `source .venv/bin/activate`) |
+| `ModuleNotFoundError: reportlab / imageio` | `bash scripts/setup_env.sh` — доустановит `requirements.txt` |
+| метрики «поехали» (PCC ≈ 0,4) | забыта инверсия полярности целей: перегенерировать `scripts/setup_targets_from_image.py` **без** `--no-invert` |
+| «чекпоинт не найден — используется необученная сеть» | нет `outputs/best.pt`: обучить (`train_gpu.py`) или указать `--ckpt путь` |
+| мало памяти на GPU | `--batch 4 --precision bf16`, либо `--phys-steps 384` (физика на инференсе дешевле) |
+| долго на CPU | `--threads 8`; оценка `evaluate.py --phys-steps 384` вместо 2048 (PCC ≈ 0,87 вместо 0,88) |
+| дашборд пустой | пересобрать `scripts/build_dashboard.py` и открывать `dashboard/index.html` (рядом должен лежать `data_bundle.js`) |
+| нет кнопки «▶ запуск» | дашборд открыт как файл (`file://`) — пульт работает только через `scripts/serve_dashboard.py` |
+| пульт пишет «нет связи с пультом» | сервер остановлен: перезапустить `scripts/serve_dashboard.py`; этап не начался |
+| в логе пульта `No module named torch` | пульт стартовал системным python: он сам попробует `.venv`, иначе выполните `bash scripts/setup_env.sh` |
+| видео не собирается | `bash scripts/setup_env.sh` (нужны `imageio` и `imageio-ffmpeg`) |
 
 Ключевое отличие от итеративных схем: **вся физика выполняется внутри сети**.
 ``hdoe/netphys.py`` содержит дифференцируемый слой ``PhysicsRefiner`` — K шагов
@@ -91,7 +201,10 @@ python scripts/sweep_phys.py          # абляция K: 0 … 2048 шагов
 автоматически (``--device auto``: cuda → mps → cpu), есть bf16/fp16 и
 GradScaler.
 
-Все скрипты запускаются командой `python <script.py>` и не требуют компиляции.
+Все скрипты запускаются командой `python <script.py>` (или `.venv/bin/python <script.py>`)
+и не требуют компиляции; `python scripts/<имя>.py --help` печатает ключи этапа.
+Единственное исключение из «скриптов» — `python -m hdoe.targets` и `python -m hdoe.corpus`
+(модули генерации данных, у них нет CLI-ключей).
 Фиксированный seed (`hdoe/config.py: SEED = 2026`) обеспечивает
 воспроизводимость метрик.
 
@@ -99,21 +212,28 @@ GradScaler.
 
 Открыть `dashboard/index.html` двойным кликом — данные встроены в
 `dashboard/data_bundle.js` (gzip + base64), поэтому сервер и интернет не нужны.
-Альтернативно можно отдать каталог статикой:
+Альтернативно можно отдать каталог статикой (если браузер блокирует `file://`):
 
 ```bash
-cd dashboard && python -m http.server 8000   # затем http://localhost:8000
+cd dashboard && python3 -m http.server 8000   # затем http://localhost:8000
 ```
+
+Запуск через пульт (кнопки этапов, живой лог, своя картинка) описан в 2б.
 
 Панели: шапка с параметрами и бейджами тестов · цели · ДОЭ (циклическая
 палитра + 8 бит + гистограмма + полоса «сеть → физика → квантование»: кривая
 PCC по шагам K и прокручиваемые миниатюры фазы, клик по кривой перематывает
-шаг) · z-свип с синхронным световым конусом ·
-плоскости (шторка/side-by-side/blend/разница) · метрики NN vs GS в двух
-протоколах · измерения (профили H/V, ROI, z-зонд, локальная SSIM-карта,
-линейка по z) · обучение (scrub таймлайна) · физика (z_crit, тест линзы,
-таблица Δx′(z)). Горячие клавиши: `пробел` — play/pause, `←`/`→` — шаг по z,
+шаг) · z-свип с синхронным световым конусом · плоскости
+(шторка/side-by-side/blend/разница) · метрики NN vs GS в двух протоколах ·
+измерения (профили H/V, ROI, z-зонд, локальная SSIM-карта, линейка по z) ·
+обучение (scrub таймлайна) · физика (z_crit, тест линзы, таблица Δx′(z)).
+
+Горячие клавиши: `пробел` — play/pause, `←`/`→` — шаг по z,
 `N`/`G` — переключение NN/GS, `T` — авто-тур по сценарию защиты.
+
+Числа на дашборде берутся из `outputs/metrics.json` и `outputs/tests.json`
+при сборке бандла, то есть всегда совпадают с отчётом; после любого
+пересчёта достаточно перезапустить `scripts/build_dashboard.py`.
 
 ## 5. Что считается и как проверяется
 

@@ -69,6 +69,9 @@ const dom = new JSDOM(html.replace(/<script src="[^"]+"><\/script>/g, ''), {
 });
 const { window } = dom;
 installCanvasStub(window);
+// офлайн-режим: fetch должен падать, иначе пульт запуска «увидит» статику
+// http-сервера и покажет кнопки, которых нет при открытии файла (file://)
+window.fetch = () => Promise.reject(new Error('offline'));
 window.requestAnimationFrame = cb => setTimeout(() => cb(performance.now()), 4);
 window.performance = window.performance || { now: () => Date.now() };
 
@@ -183,6 +186,10 @@ waitReady().then(() => {
     const txt = $('#steps-probe').textContent;
     ok('выбор кадра K обновляет зонд', /K\s*=\s*\d+/.test(txt) && /PCC/.test(txt), txt.slice(0, 60));
   }
+
+  // пульт запуска задач в офлайн-режиме не должен появляться
+  ok('пульт запуска скрыт офлайн', $('#runpanel').classList.contains('hidden')
+     && $('#run-btn').classList.contains('hidden'));
 
   // бейдж теста 8.9 (физика внутри сети)
   const b89 = $('.badge[data-test="8.9"]');

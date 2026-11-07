@@ -1478,11 +1478,258 @@ async function main() {
   // кнопка авто-тура
   document.body.insertAdjacentHTML('beforeend',
     `<button class="tour-btn" onclick="toggleTour()" title="авто-тур по сценарию (T)">▶ тур</button>`);
+  await initRunner();       // пульт запуска задач (только под serve_dashboard.py)
   requestAnimationFrame(tick);
 }
 // глобальные ссылки для инлайновых обработчиков (index.html) и авто-проверок
 window.refreshAll = refreshAll;
 window.toggleTour = toggleTour;
 window.HDOE_DEBUG = { loadBundle, main, renderPlanes, renderMetrics, renderPhysics, b64ToBufGz };
+// перечитать данные после пересборки бандла (кнопка запуска, см. RUNNER ниже)
+window.HDOE_RELOAD = async () => {
+  try {
+    CACHE.frames = {}; CACHE.small = {};
+    await loadBundle();
+    renderHeader(); renderTargets(); renderDoe(); renderPropStatic(); setZ(S.z);
+    renderPlanes(); renderMetrics(); renderMeas(); renderMeasureUI(); renderTrain();
+    renderPhysics(); renderPhysSteps();
+    $('#footer-info').innerHTML = `seed ${D.manifest.constants.seed} · данные перечитаны ` +
+      `${new Date().toLocaleTimeString('ru-RU')}`;
+  } catch (e) { /* оставим прежние данные */ }
+};
 
 document.addEventListener('DOMContentLoaded', main);
+
+/* ===================================================================
+   Пульт запуска задач. Работает только когда дашборд отдан локальным
+   сервером scripts/serve_dashboard.py (он же и запускает этапы).
+   При открытии index.html двойным кликом (file://) пульт скрыт:
+   дашборд остаётся полностью офлайн-статическим, как требует ТЗ.
+   =================================================================== */
+const RUN = { mode: 'off', available: false, poll: null, since: 0, stages: [], pipelines: [] };
+
+async function probeRunner() {
+  if (location.protocol === 'file:') return false;
+  try {
+    const r = await fetch('api/state', { cache: 'no-store' });
+    if (!r.ok) return false;
+    const js = await r.json();
+    RUN.available = true;
+    RUN.stages = js.stages || [];
+    RUN.pipelines = js.pipelines || [];
+    RUN.state = js.state || {};
+    RUN.files = js.files || {};
+    RUN.metrics = js.metrics || null;
+    RUN.python = js.python;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function buildRunner() {
+  if (!RUN.available) return;
+  const btn = $('#run-btn');
+  if (btn) btn.classList.remove('hidden');
+  $('#rp-pipelines').innerHTML = RUN.pipelines
+    .map(p => `<button data-pl="${p.id}" title="${p.stages.join(' → ')}">${p.title}</button>`)
+    .join('');
+  const groups = {};
+  RUN.stages.forEach(s => { (groups[s.group] = groups[s.group] || []).push(s); });
+  $('#rp-stages').innerHTML = Object.entries(groups).map(([g, items]) =>
+    `<div style="grid-column:1/-1" class="plot-title">${g}</div>` +
+    items.map(s => `<button class="rp-stage" data-stage="${s.id}">
+        <b>${s.title}</b><span>${s.hint || ''}</span></button>`).join('')).join('');
+  void btn;
+
+  $('#rp-pipelines').querySelectorAll('button').forEach(b => {
+    b.onclick = () => runStart({ pipeline: b.dataset.pl });
+  });
+  $('#rp-stages').querySelectorAll('.rp-stage').forEach(b => {
+    b.onclick = () => runStart({ stages: [b.dataset.stage] });
+  });
+  $('#rp-close').onclick = () => $('#runpanel').classList.add('hidden');
+  $('#rp-stop').onclick = () => fetch('api/stop', { method: 'POST' }).then(refreshRunState);
+  $('#rp-copy').onclick = () => {
+    const t = $('#rp-log').textContent;
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject())
+      .then(() => flashStatus('лог скопирован', 'ok'))
+      .catch(() => flashStatus('копирование недоступно', 'fail'));
+  };
+  // приём картинки: перетаскивание + выбор файла
+  const drop = $('#rp-drop'), file = $('#rp-file');
+  file.onchange = () => { if (file.files[0]) uploadImage(file.files[0]); };
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.add('hover');
+  }));
+  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.remove('hover');
+  }));
+  drop.addEventListener('drop', e => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) uploadImage(f);
+  });
+  refreshRunState();
+}
+
+function flashStatus(text, kind) {
+  const el = $('#rp-status');
+  el.textContent = text;
+  el.className = 'rp-status' + (kind === 'busy' ? ' busy' : kind === 'fail' ? ' fail' : '');
+}
+
+async function refreshRunState() {
+  try {
+    const js = await (await fetch('api/state', { cache: 'no-store' })).json();
+    RUN.state = js.state; RUN.files = js.files; RUN.metrics = js.metrics;
+  } catch (e) { return; }
+  const st = RUN.state || {};
+  document.querySelectorAll('.rp-stage').forEach(b => {
+    b.classList.toggle('active', b.dataset.stage === st.running);
+  });
+  const busy = !!st.running;
+  $('#run-btn').classList.toggle('busy', busy);
+  $('#run-btn').textContent = busy
+    ? `⏳ ${(RUN.stages.find(s => s.id === st.running) || {}).title || 'работа'}`
+    : '▶ запуск';
+  if (busy) {
+    flashStatus('выполняется', 'busy');
+  } else if (st.returncode === 0) {
+    flashStatus('готово', 'ok');
+  } else if (st.returncode) {
+    flashStatus(`ошибка ${st.returncode}`, 'fail');
+  } else {
+    flashStatus('готов', 'ok');
+  }
+  // что уже посчитано — подписываем на плитках этапов
+  const F = RUN.files || {};
+  const label = (key, txt) => {
+    const el = document.querySelector(`.rp-stage[data-stage="${key}"]`);
+    if (!el || !F[txt]) return;
+    let s = el.querySelector('small');
+    if (!s) { s = document.createElement('small'); el.appendChild(s); }
+    s.textContent = `готово · ${F[txt].mtime_str}`;
+  };
+  label('evaluate', 'doe'); label('tests', 'tests'); label('report', 'report');
+  label('video', 'video'); label('bundle', 'bundle'); label('train', 'ckpt');
+  label('sweep', 'sweep');
+}
+
+async function runStart(payload) {
+  const btn = $('#run-btn');
+  btn.classList.add('busy');
+  $('#runpanel').classList.remove('hidden');
+  $('#rp-log').textContent = '';
+  RUN.since = 0;
+  try {
+    const r = await fetch('api/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const js = await r.json();
+    if (!js.ok) { flashStatus(js.message || 'не удалось', 'fail'); return; }
+    flashStatus('выполняется', 'busy');
+    runPoll();
+  } catch (e) {
+    flashStatus('нет связи с пультом', 'fail');
+  }
+}
+
+function runPoll() {
+  if (RUN.poll) return;
+  const step = async () => {
+    if (!RUN.available) return;
+    let js = null;
+    try {
+      js = await (await fetch(`api/log?since=${RUN.since}`, { cache: 'no-store' })).json();
+    } catch (e) {
+      RUN.poll = setTimeout(step, 1500); return;
+    }
+    if (js.lines && js.lines.length) {
+      const pre = $('#rp-log');
+      const tail = js.lines.join('');
+      pre.insertAdjacentHTML('beforeend', escapeHtml(tail));
+      RUN.since = js.total;
+      pre.scrollTop = pre.scrollHeight;
+    }
+    if (js.running) {
+      RUN.poll = setTimeout(step, 700);
+      refreshRunStateQuiet();
+    } else {
+      RUN.poll = null;
+      await refreshRunState();
+      $('#rp-log').insertAdjacentHTML('beforeend', '\n— этап завершён —\n');
+      // после счёта перечитываем бандл, если он пересобран
+      await maybeReloadBundle();
+    }
+  };
+  RUN.poll = setTimeout(step, 300);
+}
+
+async function refreshRunStateQuiet() {
+  try {
+    const js = await (await fetch('api/state', { cache: 'no-store' })).json();
+    RUN.state = js.state;
+    document.querySelectorAll('.rp-stage').forEach(b => {
+      b.classList.toggle('active', b.dataset.stage === (js.state || {}).running);
+    });
+  } catch (e) { /* тихо */ }
+}
+
+const escapeHtml = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+async function uploadImage(file) {
+  flashStatus('загрузка картинки…', 'busy');
+  try {
+    const r = await fetch('api/upload', { method: 'POST', body: file });
+    const js = await r.json();
+    if (!js.ok) { flashStatus(js.message || 'не принято', 'fail'); return; }
+    flashStatus(`цель ${js.width}×${js.height} принята — жми «Цели из картинки»`, 'ok');
+  } catch (e) {
+    flashStatus('загрузка не удалась', 'fail');
+  }
+}
+
+/* После пересборки бандла подменяем data_bundle.js свежими данными,
+   чтобы числа на панелях совпали с новыми metrics.json без F5. */
+async function maybeReloadBundle() {
+  try {
+    const r = await fetch('data_bundle.js', { cache: 'no-store' });
+    const code = await r.text();
+    if (!code || code.length < 1000) return;
+    const el = document.createElement('script');
+    el.textContent = code;
+    document.head.appendChild(el);
+    if (window.HDOE_BUNDLE && window.HDOE_RELOAD) window.HDOE_RELOAD();
+  } catch (e) { /* тихо */ }
+}
+
+/* горячие клавиши пульта */
+function wireRunnerKeys() {
+  window.addEventListener('keydown', e => {
+    if (!RUN.available) return;
+    if (e.key === 'r' || e.key === 'R') {
+      e.preventDefault();
+      const p = $('#runpanel');
+      p.classList.toggle('hidden');
+      if (!p.classList.contains('hidden')) refreshRunState();
+    }
+  });
+}
+
+async function initRunner() {
+  const ok = await probeRunner();
+  if (!ok) return;
+  buildRunner();
+  wireRunnerKeys();
+  const btn = $('#run-btn');
+  if (btn) btn.onclick = () => {
+    const p = $('#runpanel');
+    p.classList.toggle('hidden');
+    if (!p.classList.contains('hidden')) refreshRunState();
+  };
+  RUN.poll = null;
+  runPoll();
+}
+
+window.HDOE_RUNNER = { RUN, runStart, initRunner, refreshRunState };

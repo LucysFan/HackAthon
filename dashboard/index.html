@@ -192,6 +192,7 @@
   <footer>
     <span id="footer-info"></span>
     <span class="fps" id="fps">—</span>
+    <button class="run-btn hidden" id="run-btn" title="запустить этапы конвейера (R)">▶ запуск</button>
   </footer>
 </div>
 
@@ -201,6 +202,29 @@
     <div class="modal-head"><h3 id="modal-title"></h3><button id="modal-close">×</button></div>
     <div class="modal-body" id="modal-body"></div>
   </div>
+</div>
+
+<!-- пульт запуска задач (работает при запуске через scripts/serve_dashboard.py) -->
+<div id="runpanel" class="runpanel hidden">
+  <div class="runpanel-head">
+    <h3>Запуск задач</h3>
+    <span class="rp-status" id="rp-status">готов</span>
+    <button id="rp-close" title="закрыть">×</button>
+  </div>
+  <div class="rp-pipelines" id="rp-pipelines"></div>
+  <div class="rp-stages" id="rp-stages"></div>
+  <div class="rp-upload">
+    <label class="rp-drop" id="rp-drop">
+      <input type="file" id="rp-file" accept="image/*">
+      <span>перетащить картинку или выбрать файл — станет целью</span>
+    </label>
+  </div>
+  <div class="rp-logbar">
+    <span class="rp-logtitle">лог</span>
+    <button id="rp-copy" class="mini">копировать</button>
+    <button id="rp-stop" class="mini">■ стоп</button>
+  </div>
+  <pre id="rp-log" class="rp-log"></pre>
 </div>
 
 <!-- подпись авто-тура -->
