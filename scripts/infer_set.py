@@ -143,7 +143,7 @@ def main() -> int:
                  bit_depth=8, mode="L", codes_min=int(codes.min()), codes_max=int(codes.max())),
         pipeline="U-Net → K шагов физики внутри сети → квантование 8 бит → реконструкции",
     )
-    with open(os.path.join(out, "metrics.json"), "w") as fh:
+    with open(os.path.join(out, "metrics.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1, ensure_ascii=False)
     if not args.quiet:
         for r in rows:

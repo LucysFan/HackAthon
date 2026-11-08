@@ -178,7 +178,7 @@ def build_one(kind: str, *, force: bool = False) -> str:
     PR.save_preview(arr, os.path.join(path, "preview.png"))
     import json
     import time
-    with open(os.path.join(path, "meta.json"), "w") as fh:
+    with open(os.path.join(path, "meta.json"), "w", encoding="utf-8") as fh:
         json.dump(dict(id=sid, kind=kind, created=time.strftime("%Y-%m-%dT%H:%M:%S"),
                        sources=[f"source_{i}.png" for i in range(1, C.N_PLANES + 1)],
                        synthetic=True, sample=True,

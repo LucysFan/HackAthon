@@ -297,7 +297,7 @@ def main() -> int:
             polish_info["net_only"] = dict(
                 pcc=float(np.mean([r["pcc"] for r in net_only_rows])),
                 ssim=float(np.mean([r["ssim"] for r in net_only_rows])), rows=net_only_rows)
-        with open(os.path.join(out_dir, "polish.json"), "w") as fh:
+        with open(os.path.join(out_dir, "polish.json"), "w", encoding="utf-8") as fh:
             json.dump(polish_info, fh, indent=1, ensure_ascii=False)
     else:
         polish_info = None
@@ -378,7 +378,7 @@ def main() -> int:
         metrics["phases"]["gs"] = dict(vmin=int(P.encode8bit(phi_q_gs).min()),
                                        vmax=int(P.encode8bit(phi_q_gs).max()),
                                        mean=float(phi_q_gs.mean()), std=float(phi_q_gs.std()))
-    with open(os.path.join(out_dir, "metrics.json"), "w") as fh:
+    with open(os.path.join(out_dir, "metrics.json"), "w", encoding="utf-8") as fh:
         json.dump(metrics, fh, indent=1, ensure_ascii=False)
 
     np.save(os.path.join(out_dir, "phase_nn.npy"), phi_q_nn)

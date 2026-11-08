@@ -66,7 +66,7 @@ def load_phase(out_dir: str, tag: str):
 def main() -> int:
     out_dir = C.PATHS.out
     targets = T.load_targets()
-    metrics = json.load(open(os.path.join(out_dir, "metrics.json"))) \
+    metrics = json.load(open(os.path.join(out_dir, "metrics.json"), encoding="utf-8")) \
         if os.path.exists(os.path.join(out_dir, "metrics.json")) else {}
     phi_nn, v_nn = load_phase(out_dir, "nn")
     phi_gs, v_gs = load_phase(out_dir, "gs")
@@ -186,7 +186,7 @@ def main() -> int:
     # ------------------------------------------------------- обучение
     log_path = os.path.join(out_dir, "train_log.json")
     if os.path.exists(log_path):
-        log = json.load(open(log_path))
+        log = json.load(open(log_path, encoding="utf-8"))
         fig, ax = plt.subplots(1, 2, figsize=(9.0, 2.8))
         st = [r["step"] for r in log]
         ax[0].plot(st, [r.get("loss", np.nan) for r in log], color="#4dd6c1", label="loss")

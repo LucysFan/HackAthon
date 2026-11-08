@@ -90,7 +90,7 @@ def main() -> int:
     save_png_phase(os.path.join(out_dir, "DOE_refined.png"), best[2])
     json.dump(dict(best_init=best[1], best_score=best[0], steps=args.steps, lr=args.lr,
                    candidates=rows, seed=C.SEED),
-              open(os.path.join(out_dir, "refine.json"), "w"), indent=1)
+              open(os.path.join(out_dir, "refine.json"), "w", encoding="utf-8"), indent=1)
     print(f"лучший старт: {best[1]} (PCC-прокси {best[0]:.4f}) → outputs/DOE_refined.png")
     return 0
 

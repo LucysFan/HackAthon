@@ -291,7 +291,7 @@ def test_netphys() -> bool:
     ref_pcc = None
     mp = os.path.join(C.PATHS.out, "metrics.json")
     if os.path.exists(mp):
-        ref_pcc = float(json.load(open(mp))["mean"]["pcc"])
+        ref_pcc = float(json.load(open(mp, encoding="utf-8"))["mean"]["pcc"])
     match = ref_pcc is None or abs(ref_pcc - pcc_mean) < 5e-3
     # градиент через физический слой доходит до U-Net
     net.train()
@@ -326,7 +326,7 @@ def main() -> int:
                               all_passed=all(passed), elapsed=time.time() - t0,
                               seed=C.SEED, timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"))
     os.makedirs(C.PATHS.out, exist_ok=True)
-    with open(os.path.join(C.PATHS.out, "tests.json"), "w") as fh:
+    with open(os.path.join(C.PATHS.out, "tests.json"), "w", encoding="utf-8") as fh:
         json.dump(RESULTS, fh, indent=1, ensure_ascii=False)
     print(f"\nИтог: {sum(passed)}/{len(passed)} тестов пройдено за {time.time() - t0:.1f} с")
     print(f"Результаты: {os.path.join(C.PATHS.out, 'tests.json')}")

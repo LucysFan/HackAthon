@@ -293,7 +293,7 @@ def main() -> int:
                                 elapsed=time.time() - t0))
                 np.save(os.path.join(snap_dir, f"mask_{step:06d}.npy"),
                         np.squeeze(np.asarray(P.encode8bit(torch.as_tensor(v["phi"])))))
-                with open(os.path.join(out, "train_log.json"), "w") as fh:
+                with open(os.path.join(out, "train_log.json"), "w", encoding="utf-8") as fh:
                     json.dump(log, fh, indent=1, ensure_ascii=False)
                 print(f"    ВАЛИДАЦИЯ {step}: PCC {v['pcc']:.4f} SSIM {v['ssim']:.4f} "
                       f"(сеть без физики)", flush=True)
@@ -367,7 +367,7 @@ def main() -> int:
                 print(f"    лучший чекпоинт: PCC {v['pcc']:.4f} SSIM {v['ssim']:.4f}", flush=True)
             np.save(os.path.join(snap_dir, f"mask_{step:06d}.npy"),
                     np.squeeze(np.asarray(P.encode8bit(torch.as_tensor(v["phi"])))))
-            with open(os.path.join(out, "train_log_gpu.json"), "w") as fh:
+            with open(os.path.join(out, "train_log_gpu.json"), "w", encoding="utf-8") as fh:
                 json.dump(log, fh, indent=1)
     print(f"готово за {time.time() - t0:.0f} с; лучший PCC+SSIM = {best:.4f}", flush=True)
     return 0

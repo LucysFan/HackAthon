@@ -28,7 +28,7 @@ def rows() -> list[dict]:
     # основной результат: сдаваемый набор
     main = os.path.join(ROOT, "outputs", "metrics.json")
     if os.path.exists(main):
-        m = json.load(open(main))
+        m = json.load(open(main, encoding="utf-8"))
         planes = m.get("planes") or []
         out.append(dict(id="data/targets", kind="сдаваемый набор", source="outputs/metrics.json",
                         ssim=float(np.mean([p["ssim"] for p in planes])) if planes else None,
@@ -44,7 +44,7 @@ def rows() -> list[dict]:
         path = os.path.join(SS.set_path(sid), "metrics.json")
         if not os.path.exists(path):
             continue
-        m = json.load(open(path))
+        m = json.load(open(path, encoding="utf-8"))
         planes = m.get("planes") or []
         out.append(dict(id=sid, kind=(info.get("kind") or ("загружен через дашборд"
                                                            if not info.get("synthetic")
@@ -85,9 +85,9 @@ def main() -> int:
               "или scripts/make_sample_sets.py --infer")
         return 1
     os.makedirs(os.path.dirname(args.md), exist_ok=True)
-    with open(args.md, "w") as fh:
+    with open(args.md, "w", encoding="utf-8") as fh:
         fh.write(markdown(data))
-    with open(os.path.join(ROOT, "outputs", "sets_summary.json"), "w") as fh:
+    with open(os.path.join(ROOT, "outputs", "sets_summary.json"), "w", encoding="utf-8") as fh:
         json.dump(dict(sets=data, created=__import__("time").strftime("%Y-%m-%dT%H:%M:%S")),
                   fh, indent=1, ensure_ascii=False)
     print(markdown(data))

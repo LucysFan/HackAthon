@@ -85,7 +85,7 @@ def build_set_view(set_id: str, cache_dir: str) -> dict:
     cache = os.path.join(cache_dir, f"view_{set_id}_{signature}.json")
     if os.path.isfile(cache):
         try:
-            with open(cache) as fh:
+            with open(cache, encoding="utf-8") as fh:
                 return json.load(fh)
         except (OSError, ValueError):
             pass
@@ -122,7 +122,7 @@ def build_set_view(set_id: str, cache_dir: str) -> dict:
         os.path.isfile(os.path.join(base, f"recon_{i}.png")) for i in range(1, 5))
     metrics, rows = {}, []
     if ready:
-        with open(met_path) as fh:
+        with open(met_path, encoding="utf-8") as fh:
             metrics, rows = normalize_metrics(json.load(fh))
         codes = _gray(doe_path)
         phi = np.asarray(P.decode8bit(codes), dtype=np.float64)
@@ -164,7 +164,7 @@ def build_set_view(set_id: str, cache_dir: str) -> dict:
             except OSError:
                 pass
     tmp = cache + ".tmp"
-    with open(tmp, "w") as fh:
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(out, fh, ensure_ascii=False)
     os.replace(tmp, cache)
     return out
