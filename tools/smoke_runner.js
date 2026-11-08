@@ -161,6 +161,11 @@ function multipart(files) {
     ok('один файл размножен на 4 плоскости',
       up1.info && up1.info.sources.length === 1 && up1.info.has_targets);
     const sid1 = up1.id;
+    const pending = await json('GET', `/api/set-view?set=${sid1}`);
+    ok('новый комплект отдаётся до инференса', pending.ok === true && pending.has_result === false);
+    ok('до инференса нет чужой маски и реконструкции',
+      pending.b64 && pending.b64.doe_nn && pending.b64.doe_nn.length < 100 &&
+      pending.b64.recon_nn && pending.b64.recon_nn.length < 100);
 
     const names = ['object.png', 'object.png', 'object.png', 'object.png'];
     const four = multipart(names.map((n, i) => ({
@@ -203,6 +208,11 @@ function multipart(files) {
     ok('восстановление отдаётся', rec.status === 200 && rec.body.readUInt32BE(16) === 128);
     const met = await json('GET', `/api/asset?set=${sid4}&name=metrics.json`);
     ok('metrics.json содержит 4 плоскости', Array.isArray(met.planes) && met.planes.length === 4);
+    const view = await json('GET', `/api/set-view?set=${sid4}`);
+    ok('после инференса комплект имеет собственную маску', view.has_result === true && view.b64.doe_nn.length > 1000);
+    ok('z-стопка и метрики готовы для обновления дифракции',
+      view.b64.zstack_nn.length > 10000 && view.file_metrics.nn.length === 4 &&
+      Math.abs(view.metrics.mean.ssim - met.mean.ssim) < 1e-9);
 
     // уборка: удаляем созданные комплекты
     await json('POST', `/api/sets/delete?id=${sid1}`);

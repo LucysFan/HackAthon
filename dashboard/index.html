@@ -33,6 +33,8 @@
     </nav>
   </header>
 
+  <div id="job-notice" class="job-notice hidden" role="status" aria-live="polite"></div>
+
   <main>
     <!-- ================= 1. ФИЗИКА ================= -->
     <section class="tab-body" id="tab-physics">
@@ -47,6 +49,7 @@
           </div>
           <div class="samples" id="samples"></div>
           <div class="load-hint" id="load-hint">перетащите 1–4 файла (любой размер и цвет)</div>
+          <button id="physics-run" class="primary mini run-set">прогнать сеть</button>
           <div class="set-row">
             <select id="set-select" title="комплект"></select>
             <button id="set-delete" class="mini" title="удалить комплект">×</button>
@@ -140,7 +143,8 @@
               <button id="test-download" class="mini">DOE.png</button>
             </div>
           </div>
-          <select id="test-set"></select>
+          <div id="test-status" class="inline-status" role="status" aria-live="polite">готов</div>
+          <select id="test-set" aria-label="Выбрать комплект"></select>
           <div class="test-thumbs" id="test-thumbs"></div>
           <div class="probe" id="test-probe"></div>
           <div class="doe-preview" id="test-doe"></div>
@@ -233,7 +237,8 @@
               <label class="rng"><input type="range" id="net-speed" min="0.3" max="3" step="0.1" value="1"></label>
             </div>
           </div>
-          <canvas id="net-canvas" height="420" class="plot"></canvas>
+          <div id="model-status" class="model-status" role="status">Веса ещё не загружены</div>
+          <canvas id="net-canvas" height="420" class="plot" aria-label="Граф блоков сети"></canvas>
           <div class="probe" id="net-probe"></div>
         </div>
 
@@ -253,7 +258,8 @@
         </div>
 
         <div class="panel p-histmap">
-          <div class="panel-head"><h2>Гистограммы весов</h2></div>
+          <div class="panel-head"><h2>Гистограмма весов</h2></div>
+          <select id="hist-layer" aria-label="Выбрать тензор весов"></select>
           <canvas id="hist-canvas" height="220" class="plot"></canvas>
           <div class="probe" id="hist-probe"></div>
         </div>
