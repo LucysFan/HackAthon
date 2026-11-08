@@ -1,7 +1,7 @@
 {
  "id": "sample-photo",
  "kind": "photo",
- "created": "2026-11-08T00:21:51",
+ "created": "2026-11-08T08:12:56",
  "sources": [
   "source_1.png",
   "source_2.png",
@@ -10,8 +10,8 @@
  ],
  "synthetic": true,
  "sample": true,
- "energy": 13457.873517773105,
- "nonzero_pct": 99.969482421875,
+ "energy": 2921.3399209456948,
+ "nonzero_pct": 50.96435546875,
  "size": [
   128,
   128
