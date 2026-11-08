@@ -370,9 +370,26 @@ def _history() -> dict:
                     pearson=(m.get("mean") or {}).get("pcc"),
                     gs_ssim=((m.get("gs") or {}).get("mean") or {}).get("ssim"),
                     gs_pearson=((m.get("gs") or {}).get("mean") or {}).get("pcc"))
-    return dict(train=train, val=val, test=test,
-                note="обучение — дистилляция учительских масок GS; "
-                     "валидация — контрольные четвёрки; тест — сдаваемый набор")
+    # честный протокол: тренировка / валидация / тест на разных наборах
+    # (считает scripts/eval_splits.py)
+    splits = None
+    sp_path = os.path.join(OUT, "splits.json")
+    if os.path.exists(sp_path):
+        try:
+            sp = json.load(open(sp_path))
+            splits = dict(
+                train=(sp.get("train") or {}).get("summary"),
+                val=(sp.get("val") or {}).get("summary"),
+                test=(sp.get("test") or {}).get("summary"),
+                sets=(sp.get("test") or {}).get("sets"),
+                created=sp.get("created"),
+                note=(sp.get("val") or {}).get("note"))
+        except Exception:                                  # noqa: BLE001
+            splits = None
+    return dict(train=train, val=val, test=test, splits=splits,
+                note="кривые — дистилляция учительских масок GS; "
+                     "валидация в логе — контрольная четвёрка; "
+                     "протокол train/val/test — из outputs/splits.json")
 
 
 def _model_graph() -> dict:
