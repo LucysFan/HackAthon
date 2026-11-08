@@ -10,7 +10,8 @@
 ``training.png``  ход обучения: лосс и контрольные метрики;
 ``masks.png``     маска сети и маска GS рядом, плюс гистограмма кодов;
 ``zstack.png``    свип по z: как изображение собирается и рассыпается;
-``explain.png``   путь входной картинки: исходник, яркость, кроп, цель.
+``explain.png``   путь входной картинки: исходник, яркость, кроп, цель;
+``corpus.png``    обучающая выборка: девять семейств и живые кадры корпуса.
 
 Все подписи по-русски, размеры — под ширину README (~1100 px).
 """
@@ -256,6 +257,59 @@ def fig_explain():
     return save(fig, "explain.png")
 
 
+def fig_corpus():
+    """Что именно лежит в обучающей выборке: девять семейств и живые кадры корпуса.
+
+    Верхняя половина — по одному случайному образцу каждого семейства
+    (``hdoe.corpus.FAMILIES``), то есть весь алфавит пятен, из которого
+    собираются четвёрки. Нижняя — 32 кадра, сгенерированные ровно так же, как
+    ``build_corpus``: одна-две фигуры плюс мелкая деталь на тёмном фоне.
+    Реальный ``data/corpus.npy`` не нужен: генератор детерминирован по зерну,
+    поэтому картинка воспроизводится на чистом репозитории.
+    """
+    from hdoe import corpus as CO
+    rng = np.random.default_rng(C.SEED + 5)
+    X, Y, R = CO._grid()
+    N = C.N
+    cols = 8
+    names = ["кольцо", "диск", "крест", "рамка", "штрихи",
+             "спираль точек", "пятна", "многоугольник", "сетка точек"]
+    tile = np.zeros((len(CO.FAMILIES) * N, cols * N), np.uint8)
+    for r, fam in enumerate(CO.FAMILIES):
+        for c in range(cols):
+            t = fam(X, Y, R, rng, val=1.0)
+            t = np.clip((t - 0.15) / 0.85, 0, 1)
+            t[t < 0.05] = 0.0
+            tile[r * N:(r + 1) * N, c * N:(c + 1) * N] = np.round(t * 255).astype(np.uint8)
+
+    rng2 = np.random.default_rng(C.SEED)
+    live = np.zeros((4 * N, cols * N), np.uint8)
+    for k in range(32):
+        rr, cc = divmod(k, cols)
+        live[rr * N:(rr + 1) * N, cc * N:(cc + 1) * N] = np.round(CO.draw_object(rng2) * 255).astype(np.uint8)
+
+    fig = plt.figure(figsize=(7.9, 12.2))
+    gs = fig.add_gridspec(2, 1, height_ratios=[9, 4], hspace=0.10)
+    a0 = fig.add_subplot(gs[0])
+    a0.imshow(tile, cmap="gray", vmin=0, vmax=255)
+    for r in range(len(CO.FAMILIES)):
+        a0.axhline(r * N - 0.5, color="#7f8fa6", lw=0.6, alpha=0.7)
+        a0.text(-6, r * N + N / 2, names[r], ha="right", va="center",
+                fontsize=8, color="#3a4658")
+    a0.set_xlim(-84, cols * N - 0.5)
+    a0.set_title("Девять семейств объектов, из которых собирается корпус "
+                 "(по 8 случайных образцов)", fontsize=10, loc="left")
+    a0.axis("off")
+
+    a1 = fig.add_subplot(gs[1])
+    a1.imshow(live, cmap="gray", vmin=0, vmax=255)
+    a1.set_title("32 кадра обучающего корпуса — ровно как их видит сеть: "
+                 "1–2 фигуры + мелкая деталь, тёмный фон, заполнение ~19 %",
+                 fontsize=10, loc="left")
+    a1.axis("off")
+    return save(fig, "corpus.png")
+
+
 def main() -> int:
     targets = T.load_targets()
     met = metrics()
@@ -271,6 +325,7 @@ def main() -> int:
     fig_masks(phi_nn, code_nn, phi_gs, code_gs)
     fig_zstack(phi_nn)
     fig_explain()
+    fig_corpus()
     return 0
 
 
