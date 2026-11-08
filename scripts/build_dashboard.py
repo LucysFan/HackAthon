@@ -206,6 +206,28 @@ def main() -> int:
         sizes[f"zprobe_{tag}.f32.bin"] = write_f32(os.path.join(DATA, f"zprobe_{tag}.f32.bin"),
                                                    curves)
 
+    # ------------------------------------- анимация преобразования загрузки
+    # Вкладка «физика» показывает путь картинки: исходник → яркость → кроп →
+    # 128×128/полярность/8 бит. Кадры считает hdoe/prepare.py на демо-картинке;
+    # для пользовательских комплектов те же шаги выполняются на сервере.
+    src_steps_names = []
+    try:
+        from PIL import Image as _Image
+
+        from hdoe import prepare as PR
+        src_path = os.path.join(C.PATHS.root, "data", "source", "object.png")
+        if os.path.exists(src_path):
+            steps = PR.preview_steps(src_path, size=C.N)
+            stack = np.stack([np.asarray(im.resize((C.N, C.N), _Image.LANCZOS)
+                                         if im.size != (C.N, C.N) else im, dtype=np.uint8)
+                              for _name, im in steps])
+            sizes["source_steps.u8.bin"] = write_u8(
+                os.path.join(DATA, "source_steps.u8.bin"), stack)
+            src_steps_names = [name for name, _im in steps]
+            print(f"  анимация загрузки: {len(src_steps_names)} кадров")
+    except Exception as exc:                                     # noqa: BLE001
+        print("анимация загрузки: не удалось предпосчитать —", exc)
+
     phys_steps_rows, phys_total = None, 0
 
     # ------------------------------- физика внутри сети (панель 2, «шаги K»)
@@ -301,8 +323,11 @@ def main() -> int:
         rows = []
         for i, z in enumerate(C.ZS):
             r01 = recons[tag][i]
+            plain = P.propagate(torch.as_tensor(phases[tag], dtype=torch.float64)[None, None],
+                                z)[0, 0].numpy()
             rows.append(dict(plane=i + 1, z_mm=C.ZS_MM[i],
-                             pcc=M.pcc(targets[i], r01), ssim=M.ssim(targets[i], r01)))
+                             pcc=M.pcc(targets[i], r01), ssim=M.ssim(targets[i], r01),
+                             ssim_raw=M.ssim(targets[i], plain)))
         file_metrics[tag] = rows
 
     # ------------------------------------------------------------- manifest
@@ -334,6 +359,8 @@ def main() -> int:
         bit_levels=[8, 6, 4, 2],
         phys_steps=phys_steps_rows,
         phys_total=phys_total,
+        source_steps=dict(names=src_steps_names,
+                          shapes=dict(source_steps=[len(src_steps_names), C.N, C.N])),
         phys_pack=dict((torch.load(os.path.join(out_dir, "best.pt"), map_location="cpu",
                                    weights_only=False).get("pack") or {})
                        if os.path.exists(os.path.join(out_dir, "best.pt")) else {}),
@@ -370,7 +397,8 @@ def write_js_bundle(manifest: dict) -> int:
     entries = ["targets", "phase_nn", "phase_gs", "doe_nn", "doe_gs",
                "zstack_nn", "zstack_gs", "recon_nn", "recon_gs",
                "ssim_map_nn", "ssim_map_gs", "zgrid", "train_masks", "train_recon",
-               "bitdepth_nn", "bitdepth_gs", "zprobe_nn", "zprobe_gs", "phys_steps"]
+               "bitdepth_nn", "bitdepth_gs", "zprobe_nn", "zprobe_gs", "phys_steps",
+               "source_steps"]
     parts = []
     for key in entries:
         for cand in (f"{key}.u8.bin", f"{key}.f32.bin"):

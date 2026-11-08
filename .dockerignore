@@ -1,0 +1,28 @@
+# Образец весов не нужен: всё, что нужно для сборки, лежит в репозитории
+.DS_Store
+
+# рантайм-мусор
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+*.log
+
+# инструменты разработки дашборда (jsdom, node-модули) — только для тестов
+tools/node_modules
+tools/package-lock.json
+
+# комплекты, принесённые пользователем, и всё, что он насчитал,
+# монтируется томом и в образ не попадает
+data/sets/*
+outputs/_cache
+outputs/*.npy
+experiments
+
+# старые/промежуточные чекпоинты
+outputs/distilled.pt
+outputs/teacher_masks.pt
+outputs/fixed_mode
+
+# папка для пользовательских данных создаётся в Dockerfile заново
