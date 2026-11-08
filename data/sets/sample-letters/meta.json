@@ -1,0 +1,20 @@
+{
+ "id": "sample-letters",
+ "kind": "letters",
+ "created": "2026-11-08T00:21:50",
+ "sources": [
+  "source_1.png",
+  "source_2.png",
+  "source_3.png",
+  "source_4.png"
+ ],
+ "synthetic": true,
+ "sample": true,
+ "energy": 6763.305882347075,
+ "nonzero_pct": 49.48577880859375,
+ "size": [
+  128,
+  128
+ ],
+ "bit_depth": 8
+}

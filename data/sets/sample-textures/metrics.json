@@ -1,0 +1,61 @@
+{
+ "dataset": "data/sets/sample-textures",
+ "created": "2026-11-08T00:25:55",
+ "checkpoint": "outputs/best.pt",
+ "steps": 2048,
+ "gain": 0.35,
+ "schedule": "decay",
+ "seconds": 57.59808039665222,
+ "device": "cpu",
+ "seed": 2026,
+ "planes": [
+  {
+   "plane": 1,
+   "z_mm": 24.1,
+   "ssim": 0.539068596025928,
+   "pearson": 0.6907445836719974,
+   "ssim_raw": 0.40614801199570677,
+   "pearson_raw": 0.6907445836719971
+  },
+  {
+   "plane": 2,
+   "z_mm": 25.3,
+   "ssim": 0.5411197091491199,
+   "pearson": 0.6915693730886439,
+   "ssim_raw": 0.43506471592312684,
+   "pearson_raw": 0.691569373088644
+  },
+  {
+   "plane": 3,
+   "z_mm": 26.5,
+   "ssim": 0.56799409358,
+   "pearson": 0.6707256154335486,
+   "ssim_raw": 0.3935837938330391,
+   "pearson_raw": 0.6707256154335491
+  },
+  {
+   "plane": 4,
+   "z_mm": 27.7,
+   "ssim": 0.12656193990173528,
+   "pearson": 0.27342385775728817,
+   "ssim_raw": 0.06759771424267301,
+   "pearson_raw": 0.273423857757288
+  }
+ ],
+ "mean": {
+  "ssim": 0.4436860846641958,
+  "pearson": 0.5816158574878695
+ },
+ "doe": {
+  "path": "data/sets/sample-textures/DOE.png",
+  "size": [
+   128,
+   128
+  ],
+  "bit_depth": 8,
+  "mode": "L",
+  "codes_min": 0,
+  "codes_max": 255
+ },
+ "pipeline": "U-Net → K шагов физики внутри сети → квантование 8 бит → реконструкции"
+}

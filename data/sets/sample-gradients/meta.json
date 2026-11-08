@@ -1,0 +1,20 @@
+{
+ "id": "sample-gradients",
+ "kind": "gradients",
+ "created": "2026-11-08T00:21:50",
+ "sources": [
+  "source_1.png",
+  "source_2.png",
+  "source_3.png",
+  "source_4.png"
+ ],
+ "synthetic": true,
+ "sample": true,
+ "energy": 7471.467741928498,
+ "nonzero_pct": 98.0255126953125,
+ "size": [
+  128,
+  128
+ ],
+ "bit_depth": 8
+}

@@ -19,6 +19,12 @@ experiments/_preview/
 outputs/_*.npy
 experiments/_*.npy
 
+# комплекты, принесённые пользователем через дашборд (id — метка времени),
+# и копия сдаваемого набора, которую сервер готовит сам при старте
+data/sets/2*/
+data/sets/default/
+outputs/_cache/
+
 # служебное
 .DS_Store
 *.log

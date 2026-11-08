@@ -1,0 +1,16 @@
+# Запуск: docker compose up --build  →  http://localhost:8000
+services:
+  hdoe:
+    build: .
+    image: hdoe-phasemask:latest
+    container_name: hdoe
+    ports:
+      - "8000:8000"
+    environment:
+      OMP_NUM_THREADS: "4"
+    volumes:
+      # комплекты, загруженные через дашборд, остаются на диске хоста
+      - ./data/sets:/app/data/sets
+      # всё, что считается в контейнере, видно на хосте сразу
+      - ./outputs:/app/outputs
+    restart: unless-stopped

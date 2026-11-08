@@ -1,15 +1,13 @@
-# Зафиксированные зависимости (ТЗ, п. 5.1.5, приложение Д).
-# Версии проверены на Python 3.11; для CPU-режима достаточно torch (без CUDA).
+# Зависимости решения. Проверено на Python 3.11, CPU.
+# torch/torchvision в Dockerfile ставятся отдельно CPU-сборкой
+# (--index-url https://download.pytorch.org/whl/cpu), здесь — для локальной установки.
 torch==2.15.0
 torchvision==0.29.2
-segmentation-models-pytorch==0.6.0
-pytorch-msssim==1.0.0
-scikit-image==0.26.0
+numpy==2.4.6
 scipy==1.17.1
-numpy==2.2.6
+scikit-image==0.26.0
 Pillow==13.0.0
 matplotlib==3.11.2
 reportlab==5.1.0
-# резервная видеозапись демо (demo_backup.mp4): кодировщик libx264 идёт в образе ffmpeg
 imageio==2.38.1
 imageio-ffmpeg==0.8.1
