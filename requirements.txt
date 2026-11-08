@@ -3,7 +3,7 @@
 # (--index-url https://download.pytorch.org/whl/cpu), здесь — для локальной установки.
 torch==2.14.1
 torchvision==0.29.2
-numpy==2.4.6
+numpy==2.2.6
 scipy==1.17.1
 scikit-image==0.26.0
 Pillow==13.0.0
