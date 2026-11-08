@@ -33,6 +33,7 @@ import signal
 import subprocess
 import sys
 import threading
+import traceback
 import time
 import urllib.parse
 import webbrowser
@@ -66,6 +67,8 @@ PY = pick_python()
 def have_deps() -> bool:
     try:
         import numpy  # noqa: F401
+        import torch  # noqa: F401
+        import torchvision  # noqa: F401
         from PIL import Image  # noqa: F401
         return True
     except Exception:                                      # noqa: BLE001
@@ -146,10 +149,11 @@ PIPELINES: dict[str, dict] = {
 }
 
 # ------------------------------------------------------------------ состояние
-LOCK = threading.Lock()
+LOCK = threading.RLock()  # резервирование задачи выполняется внутри проверки состояния
+MODEL_LOCK = threading.RLock()  # резервирование задачи выполняется внутри проверки состояния
 STATE: dict = dict(running=None, title=None, queue=[], command=[], started=None,
                    finished=None, returncode=None, log=[], proc=None, kind=None,
-                   set_id=None)
+                   set_id=None, job=0, cancel=False)
 MAX_LOG = 4000
 
 
@@ -184,18 +188,46 @@ def _kill_tree(proc: subprocess.Popen) -> None:
             pass
 
 
-def _exec(cmd: list[str], title: str, kind: str = "stage", set_id: str | None = None) -> int:
+def _reserve(cmd: list[str], title: str, kind: str, set_id: str | None,
+             running: str, queue: list[str] | None = None) -> int:
+    """Занять слот ДО ответа браузеру: первый опрос лога не видит ложного «готово»."""
     with LOCK:
-        STATE.update(running=(cmd[1] if len(cmd) > 1 else cmd[0]), title=title,
-                     command=cmd, started=time.time(), finished=None,
-                     returncode=None, kind=kind, set_id=set_id)
+        job = STATE["job"] + 1
+        STATE.update(running=running, title=title, command=cmd, started=time.time(),
+                     finished=None, returncode=None, kind=kind, set_id=set_id,
+                     log=[], queue=list(queue or []), proc=None, job=job, cancel=False)
+    return job
+
+
+def _finish_job(job: int, code: int) -> None:
+    with LOCK:
+        if STATE["job"] != job or STATE["finished"] is not None:
+            return
+        STATE.update(returncode=-15 if STATE["cancel"] else code,
+                     finished=time.time(), running=None, title=None, proc=None, queue=[])
+
+
+def _exec(cmd: list[str], title: str, kind: str = "stage",
+          set_id: str | None = None, job: int | None = None,
+          running: str | None = None) -> int:
+    if job is None:
+        job = _reserve(cmd, title, kind, set_id, running or cmd[0])
+    with LOCK:
+        if STATE["job"] != job or STATE["cancel"]:
+            return -15
+        STATE.update(running=running or (cmd[1] if len(cmd) > 1 else cmd[0]),
+                     title=title, command=cmd, kind=kind, set_id=set_id)
     log_append(f"\n$ {' '.join(cmd)}\n")
     env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+    code = 1
     try:
         proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, bufsize=1,
                                 env=env, start_new_session=True)
         with LOCK:
+            if STATE["job"] != job or STATE["cancel"]:
+                _kill_tree(proc)
+                return -15
             STATE["proc"] = proc
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -204,55 +236,60 @@ def _exec(cmd: list[str], title: str, kind: str = "stage", set_id: str | None = 
     except FileNotFoundError as exc:
         log_append(f"ОШИБКА: {exc}\n")
         code = 127
+    except Exception as exc:                               # noqa: BLE001
+        log_append(f"ОШИБКА запуска: {exc}\n{traceback.format_exc()}\n")
     finally:
-        with LOCK:
-            STATE["proc"] = None
-    with LOCK:
-        STATE.update(returncode=code, finished=time.time(), running=None, title=None)
+        _finish_job(job, code)
     return code
 
 
-def _worker(stage_ids: list[str]) -> None:
-    for sid in stage_ids:
+def _worker(stage_ids: list[str], job: int) -> None:
+    for i, sid in enumerate(stage_ids):
+        with LOCK:
+            if STATE["job"] != job or STATE["cancel"]:
+                break
+            STATE["queue"] = list(stage_ids[i + 1:])
         st = STAGES[sid]
-        code = _exec(st["cmd"], st["title"])
+        code = _exec(st["cmd"], st["title"], job=job, running=sid)
         if code != 0:
             log_append(f"\nостановлено на этапе «{st['title']}» (код {code})\n")
             break
-    with LOCK:
-        STATE.update(running=None, title=None, queue=[])
+    _finish_job(job, -15 if STATE["cancel"] else 0)
 
 
-def start(stage_ids: list[str]) -> tuple[bool, str]:
+def start(stage_ids: list[str]) -> tuple[bool, str, int | None]:
+    bad = [s for s in stage_ids if s not in STAGES]
+    if bad or not stage_ids:
+        return False, f"неизвестные этапы: {bad}", None
+    first = STAGES[stage_ids[0]]
     with LOCK:
         if STATE["running"]:
-            return False, f"уже выполняется: {STATE['title'] or STATE['running']}"
-        bad = [s for s in stage_ids if s not in STAGES]
-        if bad or not stage_ids:
-            return False, f"неизвестные этапы: {bad}"
-        STATE.update(log=[], queue=list(stage_ids[1:]))
-    threading.Thread(target=_worker, args=(stage_ids,), daemon=True).start()
-    return True, "запущено"
+            return False, f"уже выполняется: {STATE['title'] or STATE['running']}", None
+        job = STATE["job"] + 1
+        STATE.update(running=stage_ids[0], title=first["title"], command=first["cmd"],
+                     started=time.time(), finished=None, returncode=None, kind="stage",
+                     set_id=None, log=[], queue=list(stage_ids[1:]), proc=None,
+                     job=job, cancel=False)
+    threading.Thread(target=_worker, args=(stage_ids, job), daemon=True).start()
+    return True, "запущено", job
 
 
 def stop_all() -> dict:
-    """Остановить текущий этап и очистить очередь. Возвращает новое состояние."""
+    """Остановить текущий этап и очистить очередь; код выхода ставит владелец задачи."""
     with LOCK:
         proc = STATE.get("proc")
         running = STATE["running"]
-        STATE["queue"] = []
+        job = STATE["job"]
+        STATE.update(queue=[], cancel=bool(running))
     killed = False
     if proc is not None:
         _kill_tree(proc)
         killed = True
         log_append("\n■ остановлено пользователем\n")
-        with LOCK:
-            STATE.update(returncode=-15, finished=time.time(), running=None, title=None,
-                         proc=None)
     elif running:
-        with LOCK:
-            STATE.update(returncode=-15, finished=time.time(), running=None, title=None)
         killed = True
+    if killed:
+        _finish_job(job, -15)
     return dict(ok=True, stopped=bool(killed))
 
 
@@ -268,7 +305,7 @@ def _stat(rel: str) -> dict | None:
 
 def state_payload() -> dict:
     with LOCK:
-        cur = {k: v for k, v in STATE.items() if k != "proc"}
+        cur = {k: v for k, v in STATE.items() if k not in ("proc", "log")}
     files = {}
     for key, rel in (("doe", "outputs/DOE.png"), ("metrics", "outputs/metrics.json"),
                      ("tests", "outputs/tests.json"), ("report", "outputs/report.pdf"),
@@ -394,42 +431,61 @@ def _history() -> dict:
 
 def _model_graph() -> dict:
     """Статистика весов по слоям + структура графа (для вкладки «модель»)."""
-    cache = os.path.join(CACHE_DIR, "model_graph.json")
-    if os.path.exists(cache):
-        return json.load(open(cache))
     import torch
     from hdoe.model import build_net
     ck_path = os.path.join(OUT, "best.pt")
     if not os.path.exists(ck_path):
-        return dict(layers=[], edges=[], params=0, note="нет outputs/best.pt")
-    ck = torch.load(ck_path, map_location="cpu", weights_only=False)
+        raise RuntimeError("нет outputs/best.pt — обученные веса не найдены")
+    st = os.stat(ck_path)
+    signature = f"v2-{st.st_mtime_ns}-{st.st_size}"
+    cache = os.path.join(CACHE_DIR, f"model_graph_{signature}.json")
+    if os.path.exists(cache):
+        with open(cache) as fh:
+            return json.load(fh)
+    torch.set_num_threads(2)
+    ck = torch.load(ck_path, map_location="cpu", weights_only=True)
     net = build_net(ck.get("arch") or dict(width=48, depth=5))
     net.load_state_dict(ck["model"])
-    layers, edges = [], []
-    idx = 0
+    layers, blocks = [], {}
     for name, p in net.named_parameters():
         w = p.detach().float()
+        parts = name.split(".")
+        if name.startswith("net.stem"):
+            block, kind, label = "stem", "encoder", "Свёрточный вход"
+        elif name.startswith("net.blocks."):
+            block, kind, label = f"enc{parts[2]}", "encoder", f"Энкодер {int(parts[2]) + 1}"
+        elif name.startswith(("net.ups.", "net.decs.")):
+            block, kind, label = f"dec{parts[2]}", "decoder", f"Декодер {int(parts[2]) + 1}"
+        else:
+            block, kind, label = "head", "head", "Голова (cos, sin)"
         nz = float((w.abs() > 1e-6).float().mean())
-        layers.append(dict(name=name, shape=list(w.shape), numel=int(w.numel()),
-                           mean=float(w.mean()), std=float(w.std()),
+        layers.append(dict(name=name, block=block, shape=list(w.shape), numel=int(w.numel()),
+                           mean=float(w.mean()), std=float(w.std(unbiased=False)),
                            abs_mean=float(w.abs().mean()), min=float(w.min()),
-                           max=float(w.max()), nonzero=nz,
-                           hist=_hist(w)))
-    # грубая структура: энкодер (blocks/pools) → декодер (ups/decs) → голова
-    for i, (name, p) in enumerate(net.named_parameters()):
-        kind = ("encoder" if name.startswith(("stem", "blocks", "pools")) else
-                "decoder" if name.startswith(("ups", "decs")) else "head")
-        layers[i]["group"] = kind
-        idx += 1
-    for a, b in zip(layers, layers[1:]):
-        if a["group"] == b["group"]:
-            edges.append([a["name"], b["name"]])
+                           max=float(w.max()), nonzero=nz, group=kind, hist=_hist(w)))
+        b = blocks.setdefault(block, dict(name=block, label=label, group=kind,
+                                          numel=0, abs_sum=0.0, tensors=[]))
+        b["numel"] += int(w.numel())
+        b["abs_sum"] += float(w.abs().sum())
+        b["tensors"].append(name)
+    for b in blocks.values():
+        b["abs_mean"] = b.pop("abs_sum") / max(1, b["numel"])
+    # Настоящие связи U-Net, включая skip-связи, а не цепочка тензоров одного имени.
+    depth = int((ck.get("arch") or {}).get("depth", 4))
+    enc = [f"enc{i}" for i in range(depth)]
+    dec = [f"dec{i}" for i in range(depth - 1)]
+    edges = [["stem", enc[0]]] + [[a, b] for a, b in zip(enc, enc[1:])]
+    edges += [[enc[-1], dec[0]]] + [[a, b] for a, b in zip(dec, dec[1:])]
+    edges += [[dec[-1] if dec else enc[-1], "head"]]
+    edges += [[enc[depth - 2 - i], d, "skip"] for i, d in enumerate(dec)]
     os.makedirs(CACHE_DIR, exist_ok=True)
-    out = dict(layers=layers, edges=edges,
+    out = dict(ok=True, layers=layers, edges=edges, blocks=list(blocks.values()),
+               checkpoint=dict(path="outputs/best.pt", size=st.st_size),
                params=int(sum(l["numel"] for l in layers)),
                arch=ck.get("arch"), pack=ck.get("pack"),
-               note="каждый узел — слой с весами; толщина ребра — доля параметров")
-    json.dump(out, open(cache, "w"))
+               note="узел — блок U-Net; пунктир — skip-связь; гистограммы — реальные тензоры best.pt")
+    with open(cache, "w") as fh:
+        json.dump(out, fh)
     return out
 
 
@@ -450,14 +506,20 @@ def _activations(set_id: str | None, steps: int = 0) -> dict:
     import torch
     from hdoe import sets as SS
     from hdoe.model import build_net
+    torch.set_num_threads(2)
     ck_path = os.path.join(OUT, "best.pt")
     if not os.path.exists(ck_path):
         return dict(stages=[])
-    key = f"act_{set_id or 'default'}_{steps}.json"
+    sid = set_id or "default"
+    if not SS.valid_id(sid) or not SS.has_targets(sid):
+        raise ValueError("нет такого комплекта")
+    st = os.stat(ck_path)
+    mt = os.stat(os.path.join(SS.set_path(sid), "target_1.png"))
+    key = f"act_v2_{sid}_{st.st_mtime_ns}_{mt.st_mtime_ns}_{steps}.json"
     cache = os.path.join(CACHE_DIR, key)
     if os.path.exists(cache):
         return json.load(open(cache))
-    ck = torch.load(ck_path, map_location="cpu", weights_only=False)
+    ck = torch.load(ck_path, map_location="cpu", weights_only=True)
     net = build_net(ck.get("arch") or dict(width=48, depth=5))
     net.load_state_dict(ck["model"])
     net.eval()
@@ -467,6 +529,7 @@ def _activations(set_id: str | None, steps: int = 0) -> dict:
         tg = T.load_targets()
     x = torch.as_tensor(tg, dtype=torch.float32)[None]
     captured: dict[str, np.ndarray] = {}
+    order: list[str] = []
 
     def hook(name):
         def fn(_m, _i, out):
@@ -481,38 +544,28 @@ def _activations(set_id: str | None, steps: int = 0) -> dict:
             lo, hi = float(v.min()), float(v.max())
             v = (v - lo) / (hi - lo + 1e-9)
             captured[name] = np.asarray(v * 255, dtype=np.uint8)
+            order.append(name)
         return fn
 
     handles = []
-    # снимаем активации с внутренних модулей (это ResNet-энкодер + U-Net-голова),
-    # поэтому обходим дерево, а не только верхний уровень
-    wanted = ("backbone", "layer1", "layer2", "layer3", "layer4", "stem", "blocks",
-              "pools", "ups", "decs", "head", "neck", "conv")
+    # Только границы стадий; порядок берём из фактического forward, а не из
+    # named_modules (там все ups идут раньше всех decs).
+    wanted = {"net", "net.stem", *(f"net.blocks.{i}" for i in range(len(net.net.blocks))),
+              *(f"net.ups.{i}" for i in range(len(net.net.ups))),
+              *(f"net.decs.{i}" for i in range(len(net.net.decs))), "net.head"}
     for name, m in net.named_modules():
-        if name and any(part.split(".")[-1].rstrip("0123456789[]").startswith(w)
-                        for part in name.split(".") for w in wanted):
-            handles.append(m.register_forward_hook(hook(name)))
+        if name in wanted:
+            handles.append(m.register_forward_hook(hook("фаза φ" if name == "net" else name)))
     with torch.no_grad():
-        try:
-            _ = net(x)
-        except Exception as exc:                            # noqa: BLE001
-            log_append(f"активации: {exc}\n")
+        _ = net(x)
     for h in handles:
         h.remove()
-    # оставляем «скелет»: верхние модули каждой ветки (stem, блоки, апсемплы, голова)
-    def keep(name: str) -> bool:
-        leaf = name.split(".")[-1]
-        if leaf.isdigit():                       # внутренние слои Sequential
-            return False
-        return any(k in name for k in ("stem", "blocks", "ups", "decs", "head", "neck"))
-
-    stages = [dict(name=n.replace("net.", ""), size=len(v.flatten()),
-                   data=v.flatten().tolist())
-              for n, v in captured.items() if keep(n)]
-    stages = stages[:24]
+    stages = [dict(name=n.replace("net.", ""), size=len(captured[n].flatten()),
+                   data=captured[n].flatten().tolist())
+              for n in dict.fromkeys(order) if n in captured]
     if not stages:                                  # ничего не сняли — не кэшируем
         return dict(stages=[], set=set_id, note="нет активаций")
-    out = dict(stages=stages, set=set_id, note="усреднение по каналам, 24×24")
+    out = dict(ok=True, stages=stages, set=sid, note="усреднение по каналам, 24×24")
     os.makedirs(CACHE_DIR, exist_ok=True)
     json.dump(out, open(cache, "w"))
     return out
@@ -524,11 +577,17 @@ def handle_upload_set(content_type: str, raw: bytes) -> dict:
     files = parse_multipart(content_type, raw)
     if not files:
         return dict(ok=False, message="не пришло ни одного файла")
+    if len(files) > 4:
+        return dict(ok=False, message="можно загрузить не больше четырёх файлов")
     single = len(files) == 1
     sid = SS.new_set_id()
     os.makedirs(SS.set_path(sid), exist_ok=True)
-    SS.save_uploads(sid, [f[1] for f in files])
-    SS.build_targets(sid, single=single)
+    try:
+        SS.save_uploads(sid, [f[1] for f in files])
+        SS.build_targets(sid, single=single)
+    except Exception:
+        shutil.rmtree(SS.set_path(sid), ignore_errors=True)
+        raise
     log_append(f"\nпринят комплект {sid}: {len(files)} файл(ов)"
                f"{' (копируется на 4 плоскости)' if single else ''}\n")
     return dict(ok=True, id=sid, info=SS.info(sid))
@@ -573,19 +632,23 @@ def handle_infer(set_id: str, steps: int) -> dict:
     from hdoe import sets as SS
     if not SS.valid_id(set_id) or not SS.has_targets(set_id):
         return dict(ok=False, message="нет такого комплекта")
+    ck = os.path.join(OUT, "best.pt")
+    if not os.path.isfile(ck):
+        return dict(ok=False, message="нет обученных весов outputs/best.pt")
+    if steps < 0 or steps > 8192:
+        return dict(ok=False, message="число шагов должно быть от 0 до 8192")
+    sp = SS.set_path(set_id)
+    cmd = [PY, "scripts/infer_set.py", "--set", sp, "--device", "auto"]
+    if steps:
+        cmd += ["--steps", str(steps)]
     with LOCK:
         if STATE["running"]:
             return dict(ok=False, message=f"уже выполняется: {STATE['title']}")
-    sp = SS.set_path(set_id)
-
-    def job():
-        cmd = [PY, "scripts/infer_set.py", "--set", sp, "--device", "auto"]
-        if steps:
-            cmd += ["--steps", str(steps)]
-        _exec(cmd, f"инференс комплекта {set_id}", kind="infer", set_id=set_id)
-
-    threading.Thread(target=job, daemon=True).start()
-    return dict(ok=True, id=set_id)
+        job = _reserve(cmd, f"инференс комплекта {set_id}", "infer", set_id, "infer_set.py")
+    threading.Thread(target=_exec, args=(cmd, f"инференс комплекта {set_id}"),
+                     kwargs=dict(kind="infer", set_id=set_id, job=job,
+                                 running="infer_set.py"), daemon=True).start()
+    return dict(ok=True, id=set_id, job=job)
 
 
 # ------------------------------------------------------------------ сервер
@@ -634,23 +697,33 @@ class Handler(BaseHTTPRequestHandler):
                 chunk, total = STATE["log"][since:], len(STATE["log"])
                 cur = {k: STATE[k] for k in ("running", "title", "returncode",
                                              "started", "finished", "kind", "set_id",
-                                             "queue")}
+                                             "queue", "job")}
             return self._json(dict(lines=chunk, total=total, **cur))
         if path == "/api/sets":
             return self._json(dict(sets=list_sets_safe()))
+        if path == "/api/set-view":
+            sid = (q.get("set") or [""])[0]
+            try:
+                from hdoe.dashboard_data import build_set_view
+                with MODEL_LOCK:
+                    return self._json(build_set_view(sid, CACHE_DIR))
+            except Exception as exc:                        # noqa: BLE001
+                return self._json(dict(ok=False, message=str(exc)), 404)
         if path == "/api/history":
             return self._json(_history())
         if path == "/api/model/graph":
             try:
-                return self._json(_model_graph())
+                with MODEL_LOCK:
+                    return self._json(_model_graph())
             except Exception as exc:                        # noqa: BLE001
-                return self._json(dict(layers=[], edges=[], error=str(exc)), 200)
+                return self._json(dict(ok=False, layers=[], edges=[], error=str(exc)), 503)
         if path == "/api/model/act":
             sid = (q.get("set") or [None])[0]
             try:
-                return self._json(_activations(sid))
+                with MODEL_LOCK:
+                    return self._json(_activations(sid))
             except Exception as exc:                        # noqa: BLE001
-                return self._json(dict(stages=[], error=str(exc)), 200)
+                return self._json(dict(ok=False, stages=[], error=str(exc)), 503)
         if path == "/api/asset":
             return self._asset(q)
         if path.startswith("/api/sets/"):
@@ -694,7 +767,7 @@ class Handler(BaseHTTPRequestHandler):
             path = "/index.html"
         rel = os.path.normpath(path.lstrip("/"))
         full = os.path.join(DASH, rel)
-        if not os.path.abspath(full).startswith(os.path.abspath(DASH)) or \
+        if os.path.commonpath([os.path.abspath(full), os.path.abspath(DASH)]) != os.path.abspath(DASH) or \
                 not os.path.isfile(full):
             return self._json(dict(ok=False, message="не найдено"), 404)
         ext = os.path.splitext(full)[1].lower()
@@ -723,8 +796,8 @@ class Handler(BaseHTTPRequestHandler):
                 ids = list(pl["stages"])
             else:
                 ids = [str(s) for s in (req.get("stages") or [])] or [str(req.get("stage"))]
-            ok, msg = start(ids)
-            return self._json(dict(ok=ok, message=msg, stages=ids), 200 if ok else 409)
+            ok, msg, job = start(ids)
+            return self._json(dict(ok=ok, message=msg, stages=ids, job=job), 200 if ok else 409)
         if url.path == "/api/stop":
             return self._json(stop_all())
         if url.path == "/api/sets":
@@ -737,7 +810,11 @@ class Handler(BaseHTTPRequestHandler):
                 req = json.loads(raw or b"{}")
             except json.JSONDecodeError:
                 return self._json(dict(ok=False, message="плохой JSON"), 400)
-            res = handle_infer(str(req.get("set") or ""), int(req.get("steps") or 0))
+            try:
+                steps = int(req.get("steps") or 0)
+            except (TypeError, ValueError):
+                return self._json(dict(ok=False, message="steps должно быть целым числом"), 400)
+            res = handle_infer(str(req.get("set") or ""), steps)
             return self._json(res, 200 if res.get("ok") else 409)
         if url.path == "/api/sets/delete":
             from hdoe import sets as SS

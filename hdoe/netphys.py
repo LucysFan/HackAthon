@@ -84,6 +84,7 @@ class PhysicsRefiner(nn.Module):
         self.schedule = schedule
         self.gain_end = float(gain_end)
         self.step_clip = float(step_clip)
+        self.on_step = None  # необязательный прогресс для CLI/дашборда
         g0 = max(float(gain), 1e-3)
         self.raw_gain = nn.Parameter(torch.tensor(math.log(math.expm1(g0))))
         self.learnable = bool(learnable)
@@ -126,7 +127,10 @@ class PhysicsRefiner(nn.Module):
             for k in range(self.steps):
                 gg = x.detach().requires_grad_(True)
                 I = P.forward_model(gg, self.zs)
-                g, = torch.autograd.grad(physical_loss(I, t), gg)
+                loss = physical_loss(I, t)
+                g, = torch.autograd.grad(loss, gg)
+                if self.on_step is not None:
+                    self.on_step(k + 1, self.steps, float(loss.detach()))
                 scale = g.flatten(1).std(dim=1).view(-1, 1, 1, 1) + 1e-8
                 a = self.alpha()
                 if self.schedule == "decay":
