@@ -316,6 +316,20 @@ def main() -> int:
     if not tests:
         tests = {"summary": dict(passed=0, total=0, all_passed=False)}
     json.dump(tests, open(os.path.join(DATA, "tests.json"), "w"), indent=1, ensure_ascii=False)
+    # протокол train/val/test (scripts/eval_splits.py) — для офлайн-режима
+    splits = None
+    sp_path = os.path.join(out_dir, "splits.json")
+    if os.path.exists(sp_path):
+        sp = json.load(open(sp_path))
+        splits = dict(train=(sp.get("train") or {}).get("summary"),
+                      val=(sp.get("val") or {}).get("summary"),
+                      test=(sp.get("test") or {}).get("summary"),
+                      sets=(sp.get("test") or {}).get("sets"),
+                      created=sp.get("created"))
+        json.dump(splits, open(os.path.join(DATA, "splits.json"), "w"), indent=1,
+                  ensure_ascii=False)
+        print(f"  сплиты: train {splits['train']['ssim']:.3f} / "
+              f"val {splits['val']['ssim']:.3f} / test {splits['test']['ssim']:.3f} SSIM")
 
     # --------------------------------------------- метрики по файлам (сверка)
     file_metrics = {}
@@ -359,6 +373,7 @@ def main() -> int:
         bit_levels=[8, 6, 4, 2],
         phys_steps=phys_steps_rows,
         phys_total=phys_total,
+        splits=splits,
         source_steps=dict(names=src_steps_names,
                           shapes=dict(source_steps=[len(src_steps_names), C.N, C.N])),
         phys_pack=dict((torch.load(os.path.join(out_dir, "best.pt"), map_location="cpu",
@@ -408,7 +423,7 @@ def write_js_bundle(manifest: dict) -> int:
                 break
     jsons = {}
     for fname, key in (("train_log.json", "train_log"), ("train_steps.json", "train_steps"),
-                       ("tests.json", "tests")):
+                       ("tests.json", "tests"), ("splits.json", "splits")):
         path = os.path.join(DATA, fname)
         if os.path.exists(path):
             jsons[key] = json.load(open(path))
