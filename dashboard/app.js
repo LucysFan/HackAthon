@@ -27,11 +27,13 @@ const S = {
   fps: 0,
 };
 
-const D = {};                    // данные бандла
+const D = {};                    // данные активного комплекта
+let DEMO = null;                 // неизменный сдаваемый набор из бандла
 const CACHE = { frames: {}, small: {} };
 const RUN = { mode: 'off', available: false, sets: [], stages: [], pipelines: [],
               poll: null, since: 0, state: {}, files: {}, metrics: null,
-              graph: null, act: null, history: null, currentSet: null, testResult: null };
+              graph: null, act: null, actSet: null, history: null, currentSet: null,
+              loadSeq: 0, starting: false, graphError: null, actError: null, job: null };
 
 /* ------------------------------------------------------------------ утилиты */
 const $ = s => document.querySelector(s);
@@ -40,7 +42,7 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const fmt = (v, d = 3) => (v === undefined || v === null || Number.isNaN(v)) ? '—' : (+v).toFixed(d);
 const dpr = () => window.devicePixelRatio || 1;
 
-function toCanvas(data, offset) {
+function toCanvas(data, offset, scale = 1) {
   const c = document.createElement('canvas');
   c.width = c.height = N;
   const ctx = c.getContext('2d');
@@ -48,7 +50,7 @@ function toCanvas(data, offset) {
   const px = img.data;
   for (let i = 0; i < N * N; i++) {
     const o = i * 4;
-    const v = data[offset + i];
+    const v = data[offset + i] * scale;
     px[o] = px[o + 1] = px[o + 2] = v;
     px[o + 3] = 255;
   }
@@ -95,12 +97,59 @@ function targetFrame(i) {
 function reconFrame(i, variant = S.variant) {
   const src = D.recon[variant];
   const key = 'r' + variant + i;
-  if (!CACHE.frames[key]) CACHE.frames[key] = toCanvas(src, i * N * N);
+  if (!CACHE.frames[key]) CACHE.frames[key] = toCanvas(src, i * N * N, 255);
   return CACHE.frames[key];
 }
 
 function phaseCodes() {
   return S.variant === 'gs' ? D.phase.gs : D.phase.nn;
+}
+
+function hasResult() { return !!(D.doe.nn && D.doe.nn.length); }
+function activeRows() { return (D.manifest.file_metrics || {})[S.variant] || []; }
+function activeMean() { const m = D.manifest.metrics || {}; return (S.variant === 'gs' ? (m.gs || {}).mean : m.mean) || {}; }
+function rememberDemo() { DEMO = { ...D }; }
+function clearCanvas(cv, text) {
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!text) return;
+  ctx.fillStyle = '#8ea1c2'; ctx.font = `${11 * dpr()}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  const words = text.split(' '), lines = []; let line = '';
+  for (const word of words) {
+    if ((line + ' ' + word).length > 24 && line) { lines.push(line); line = word; }
+    else line = line ? line + ' ' + word : word;
+  }
+  if (line) lines.push(line);
+  lines.forEach((l, i) => ctx.fillText(l, cv.width / 2, cv.height / 2 + (i - (lines.length - 1) / 2) * 16));
+  ctx.textAlign = 'left';
+}
+function notify(text, kind = 'ok') {
+  const el = $('#job-notice');
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'job-notice ' + kind;
+  el.classList.toggle('hidden', !text);
+}
+async function fetchJSON(url, options) {
+  const r = await fetch(url, options);
+  let js;
+  try { js = await r.json(); } catch (e) { throw new Error(`сервер вернул не JSON (${r.status})`); }
+  if (!r.ok || js.ok === false) throw new Error(js.message || js.error || `ошибка сервера ${r.status}`);
+  return js;
+}
+function updateJobButtons() {
+  const busy = !!(RUN.state && RUN.state.running) || RUN.starting;
+  const inferBusy = busy && (RUN.state.kind === 'infer' || RUN.starting);
+  for (const id of ['test-run', 'physics-run']) {
+    const b = $('#' + id);
+    if (!b) continue;
+    b.disabled = busy || !RUN.available;
+    b.textContent = inferBusy ? '⏳ считаю…' : 'прогнать сеть';
+  }
+  const stop = $('#rp-stop');
+  if (stop) stop.disabled = !busy;
 }
 
 /* ------------------------------------------------------------------ загрузка */
@@ -184,7 +233,7 @@ function renderHeader() {
   $('#params').innerHTML = [
     `SSIM <b>${fmt(mean.ssim, 3)}</b>`,
     `Pearson <b>${fmt(mean.pcc, 3)}</b>`,
-    `K = <b>${(m.phys || {}).steps || '—'}</b>`,
+    `K = <b>${m.steps || (m.phys || {}).steps || '—'}</b>`,
     `N <b>${c.N}</b>`,
     `seed <b>${c.seed}</b>`,
   ].map(t => `<span class="chip">${t}</span>`).join('');
@@ -242,7 +291,6 @@ function setTab(tab) {
   if (tab === 'test') { renderTestTab(); }
   if (tab === 'run') renderRunTab();
   if (tab === 'physics') { renderDoe(); renderPlanes(); }
-  requestAnimationFrame(tick);
 }
 
 /* =================================================================== 1. ФИЗИКА */
@@ -279,6 +327,13 @@ function setPlane(i) {
 }
 
 function renderDoe() {
+  if (!hasResult()) {
+    clearCanvas($('#doe-phase'), 'Маска появится после запуска сети');
+    clearCanvas($('#doe-gray'), 'Нет маски');
+    drawHistogram(new Uint8Array(0), null);
+    $('#doe-probe').textContent = 'Комплект загружен, результат ещё не рассчитан';
+    return;
+  }
   const codes = S.quant ? (S.variant === 'gs' ? D.doe.gs : D.doe.nn) : null;
   const cv = $('#doe-phase');
   const ctx = cv.getContext('2d');
@@ -360,6 +415,12 @@ function setZ(k) {
   const cv = $('#prop-canvas');
   const ctx = cv.getContext('2d');
   const stack = D.zstack[S.variant];
+  if (!stack || !stack.length) {
+    clearCanvas(cv, 'Прогнать сеть → дифракция выбранной картинки');
+    $('#prop-probe').textContent = 'Это панель результата. Старая демо-дифракция скрыта.';
+    $('#prop-slider').value = 0;
+    return;
+  }
   drawScaled(ctx, toCanvas(stack, S.z * N * N), cv.width, cv.height);
   const z = D.zgrid[S.z];
   const c = D.manifest.constants;
@@ -409,7 +470,9 @@ function renderPlanes() {
     cv.width = cv.height = N;
     const ctx = cv.getContext('2d');
     ctx.imageSmoothingEnabled = false;
-    if (S.planeMode === 'side') {
+    if (!hasResult()) {
+      ctx.drawImage(targetFrame(i), 0, 0);
+    } else if (S.planeMode === 'side') {
       ctx.drawImage(targetFrame(i), 0, 0, N, N);
       ctx.globalAlpha = 0.5;
       ctx.drawImage(reconFrame(i), 0, 0, N, N);
@@ -418,7 +481,7 @@ function renderPlanes() {
       const img = ctx.createImageData(N, N);
       const t = D.targets, r = D.recon[S.variant];
       for (let k = 0; k < N * N; k++) {
-        const d = Math.abs(t[i * N * N + k] / 255 - r[i * N * N + k] / 255);
+        const d = Math.abs(t[i * N * N + k] / 255 - r[i * N * N + k]);
         const v = clamp(d * 255 * 2, 0, 255);
         img.data[k * 4] = v; img.data[k * 4 + 1] = v * 0.35; img.data[k * 4 + 2] = v * 0.2;
         img.data[k * 4 + 3] = 255;
@@ -438,7 +501,7 @@ function renderPlanes() {
     const tag = document.createElement('div');
     tag.className = 'tag';
     const m = (D.manifest.file_metrics || {})[S.variant];
-    tag.textContent = `z${i + 1} · ${m ? fmt(m[i].ssim, 3) : ''}`;
+    tag.textContent = !hasResult() ? `z${i + 1} · цель · ожидает запуска` : `z${i + 1} · ${m && m[i] ? fmt(m[i].ssim, 3) : ''}`;
     cell.appendChild(tag);
     cell.onclick = () => setPlane(i);
     cell.onmousemove = e => {
@@ -453,7 +516,7 @@ function renderPlanes() {
   const c = D.manifest.constants;
   $('#target-caption').innerHTML = row
     ? `z${S.plane + 1} = <b>${row.z_mm.toFixed(1)} мм</b> · Δx′ ${(c.out_dx[S.plane] * 1e6).toFixed(2)} мкм · SSIM <b>${fmt(row.ssim, 3)}</b> · Pearson <b>${fmt(row.pcc, 3)}</b>`
-    : '';
+    : (!hasResult() ? 'Цели выбранного комплекта. Нажмите «прогнать сеть» для расчёта маски и дифракции.' : '');
 }
 
 function renderBitbar() {
@@ -465,6 +528,7 @@ function renderBitbar() {
     $$('#bitbar button').forEach(x => x.classList.toggle('active', x === btn));
     S.bits = +btn.dataset.bit;
     const src = D.bitdepth[S.variant];
+    if (!src || !src.length) return;
     const cell = $('#planes-grid').children[S.plane];
     if (!cell) return;
     const cv = cell.querySelector('canvas');
@@ -476,6 +540,11 @@ function renderBitbar() {
 /* ------------------------------------------------------------- профили */
 function renderProfiles() {
   const rec = D.recon[S.variant];
+  if (!rec || !rec.length) {
+    ['prof-h', 'prof-v', 'zprobe'].forEach(id => clearCanvas($('#' + id)));
+    $('#prof-probe').textContent = 'Профили появятся после расчёта';
+    return;
+  }
   const off = S.plane * N * N;
   const row = [], col = [];
   for (let i = 0; i < N; i++) { row.push(rec[off + 64 * N + i]); col.push(rec[off + i * N + 64]); }
@@ -512,7 +581,7 @@ function drawSeries(cv, vals, color) {
   if (!(hi > lo)) { hi = lo + 1; }
   ctx.beginPath();
   vals.forEach((v, i) => {
-    const x = (i / (vals.length - 1)) * W;
+    const x = (i / Math.max(1, vals.length - 1)) * W;
     const y = H - 4 - ((v - lo) / (hi - lo)) * (H - 8);
     i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   });
@@ -523,28 +592,28 @@ function drawSsim() {
   const cv = $('#ssim-canvas');
   if (!cv) return;
   const src = D.ssimMap[S.variant];
-  if (!src || !src.length) return;
-  drawScaled(cv.getContext('2d'), toCanvas(src, S.plane * N * N), cv.width, cv.height);
+  if (!src || !src.length) { clearCanvas(cv, 'Нет результата'); return; }
+  const mapped = new Float32Array(N * N);
+  for (let i = 0; i < N * N; i++) mapped[i] = (src[S.plane * N * N + i] + 1) * 127.5;
+  drawScaled(cv.getContext('2d'), toCanvas(mapped, 0), cv.width, cv.height);
 }
 
 /* =================================================================== 2. ТЕСТ */
+function setLabel(id) { return id === 'default' || !id ? 'сдаваемый набор' : id; }
 function renderTestTab() {
   const sel = $('#test-set');
   const sets = RUN.sets || [];
-  const sig = sets.map(s => s.id).join(',');
+  const sig = sets.map(s => `${s.id}:${s.mtime || 0}`).join(',');
   if (sel.dataset.sig !== sig) {
     sel.dataset.sig = sig;
     sel.innerHTML = sets.map(s => {
-      const label = s.id === 'default' ? 'сдаваемый набор' : s.id;
       const m = s.mean ? ` · SSIM ${fmt(s.mean.ssim, 3)}` : '';
-      return `<option value="${s.id}">${label}${m}</option>`;
-    }).join('') || '<option value="">нет комплектов</option>';
-    if (!sets.some(s => s.id === RUN.currentSet)) RUN.currentSet = sets.length ? sets[sets.length - 1].id : null;
-    sel.value = RUN.currentSet || '';
-    sel.onchange = () => { RUN.currentSet = sel.value || null; renderTestTab(); loadSetIntoPhysics(sel.value); };
+      return `<option value="${escapeHtml(s.id)}">${escapeHtml(setLabel(s.id))}${m}</option>`;
+    }).join('') || '<option value="default">сдаваемый набор</option>';
   }
-  const cur = RUN.currentSet;
-  const info = sets.find(s => s.id === cur);
+  if (!RUN.currentSet) RUN.currentSet = sets.some(s => s.id === 'default') ? 'default' : null;
+  sel.value = RUN.currentSet || 'default';
+  sel.onchange = () => selectSet(sel.value);
   $('#test-thumbs').innerHTML = '';
   for (let i = 0; i < NP; i++) {
     const d = document.createElement('div');
@@ -553,47 +622,34 @@ function renderTestTab() {
     c.width = c.height = N;
     c.getContext('2d').drawImage(targetFrame(i), 0, 0);
     d.appendChild(c);
-    d.innerHTML += `<span>z${i + 1}</span>`;
+    d.insertAdjacentHTML('beforeend', `<span>z${i + 1}</span>`);
     $('#test-thumbs').appendChild(d);
   }
-  const m = info && info.mean ? info.mean : (D.manifest.metrics.mean || {});
-  const pear = m.pearson ?? m.pcc ?? (D.manifest.metrics.mean || {}).pcc;
-  $('#test-probe').innerHTML = cur
-    ? `${cur === 'default' ? 'сдаваемый набор' : 'комплект <b>' + cur + '</b>'}` +
-      ` · SSIM <b>${fmt(m.ssim, 3)}</b> · Pearson <b>${fmt(pear, 3)}</b>` +
-      `${info && info.has_doe ? ' · DOE готов' : ' · DOE не посчитан'}`
-    : `сдаваемый набор · SSIM <b>${fmt(m.ssim, 3)}</b> · Pearson <b>${fmt(pear, 3)}</b>`;
-  // DOE из комплекта либо из сдаваемого набора
+  const mean = activeMean();
+  $('#test-probe').innerHTML = `комплект <b>${escapeHtml(setLabel(RUN.currentSet))}</b>` +
+    ` · SSIM <b>${fmt(mean.ssim, 3)}</b> · Pearson <b>${fmt(mean.pcc, 3)}</b>` +
+    (hasResult() ? ' · DOE готов' : ' · ожидает запуска сети');
   const doeBox = $('#test-doe');
   doeBox.innerHTML = '';
-  const url = cur ? `api/asset?set=${encodeURIComponent(cur)}&name=DOE.png` : null;
-  if (url && info && info.has_doe) {
-    const img = document.createElement('img');
-    img.src = url + '&t=' + Date.now();
-    img.className = 'doe-img';
-    doeBox.appendChild(img);
-    doeBox.insertAdjacentHTML('beforeend', '<div class="plot-title">DOE.png 128×128 · 8 бит</div>');
-    $('#test-download').onclick = () => {
-      const a = document.createElement('a');
-      a.href = img.src;
-      a.download = 'DOE.png';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    };
-  } else {
-    doeBox.innerHTML = `<div class="plot-title">DOE.png сдаваемого набора</div>`;
+  const download = $('#test-download');
+  download.disabled = !hasResult();
+  if (hasResult()) {
     const c = document.createElement('canvas');
     c.width = c.height = N;
     drawScaled(c.getContext('2d'), toCanvas(D.doe[S.variant], 0), N, N);
     c.className = 'doe-img';
     doeBox.appendChild(c);
-    $('#test-download').onclick = () => downloadCanvas(c, 'DOE.png');
+    doeBox.insertAdjacentHTML('beforeend', '<div class="plot-title">DOE.png этого комплекта · 128×128 · 8 бит</div>');
+    download.onclick = () => downloadCanvas(c, 'DOE.png');
+  } else {
+    doeBox.innerHTML = '<div class="hint">Маска ещё не рассчитана. Нажмите «прогнать сеть».</div>';
+    download.onclick = null;
   }
-  renderTestRecon(cur, info);
+  renderTestRecon();
   renderMetrics();
   renderCurves();
   renderSetsTable();
+  updateJobButtons();
 }
 
 /** Таблица по всем комплектам: типы картинок, SSIM и Pearson. */
@@ -616,11 +672,7 @@ function renderSetsTable() {
     `</table>`;
   box.querySelectorAll('tr[data-set]').forEach(tr => tr.onclick = () => {
     const id = tr.dataset.set;
-    if (!id.startsWith('sample-')) return;
-    RUN.currentSet = id;
-    if ($('#test-set')) $('#test-set').value = id;
-    loadSetIntoPhysics(id);
-    renderTestTab();
+    selectSet(id);
   });
 }
 
@@ -635,36 +687,32 @@ function downloadCanvas(cv, name) {
   });
 }
 
-function renderTestRecon(cur, info) {
+function renderTestRecon() {
   const box = $('#test-recon');
   box.innerHTML = '';
-  const metrics = RUN.testResult && RUN.testResult.planes;
+  const rows = activeRows();
   for (let i = 0; i < NP; i++) {
     const cell = document.createElement('div');
     cell.className = 'recon-cell';
     const c = document.createElement('canvas');
     c.width = c.height = N;
     const ctx = c.getContext('2d');
-    if (cur && info && info.has_recon) {
-      const img = new Image();
-      img.onload = () => { ctx.imageSmoothingEnabled = false; ctx.drawImage(img, 0, 0); };
-      img.src = `api/asset?set=${encodeURIComponent(cur)}&name=recon_${i + 1}.png&t=${Date.now()}`;
-    } else {
-      ctx.drawImage(reconFrame(i), 0, 0);
-    }
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(hasResult() ? reconFrame(i) : targetFrame(i), 0, 0);
     cell.appendChild(c);
-    const m = metrics ? metrics[i] : ((D.manifest.file_metrics || {})[S.variant] || [])[i];
-    cell.insertAdjacentHTML('beforeend',
-      `<span>z${i + 1} · SSIM ${m ? fmt(m.ssim, 3) : '—'}<br>Pearson ${m ? fmt(m.pearson || m.pcc, 3) : '—'}</span>`);
+    const m = rows[i];
+    cell.insertAdjacentHTML('beforeend', hasResult()
+      ? `<span>z${i + 1} · SSIM ${fmt(m && m.ssim, 3)}<br>Pearson ${fmt(m && m.pcc, 3)}</span>`
+      : `<span>z${i + 1} · цель<br>ожидает запуска</span>`);
     box.appendChild(cell);
   }
 }
 
 function renderMetrics() {
   const key = r => (S.protocol === 'primary' ? r.ssim : (r.ssim_raw ?? r.ssim));
-  const rows = (D.manifest.file_metrics || {})[S.variant] || [];
+  const rows = activeRows();
   const active = rows[S.plane] || {};
-  const mean = (D.manifest.metrics || {}).mean || {};
+  const mean = activeMean();
   const gs = ((D.manifest.metrics || {}).gs || {}).mean || {};
   $('#c-ssim').textContent = fmt(key(active), 3);
   $('#c-pearson').textContent = fmt(active.pcc, 3);
@@ -676,17 +724,17 @@ function renderMetrics() {
       <span class="bar-label">z${i + 1}</span>
       <div class="bar"><i style="width:${(clamp(key(r), 0, 1) * 100).toFixed(1)}%"></i></div>
       <span class="bar-val">${fmt(key(r), 3)}</span>
-    </div>`).join('') +
-    `<div class="bar-row"><span class="bar-label">∅</span>
+    </div>`).join('') + (rows.length ? `
+    <div class="bar-row"><span class="bar-label">∅</span>
       <div class="bar alt"><i style="width:${(clamp(key(mean), 0, 1) * 100).toFixed(1)}%"></i></div>
-      <span class="bar-val">${fmt(key(mean), 3)}</span></div>`;
+      <span class="bar-val">${fmt(key(mean), 3)}</span></div>` : '<div class="hint">Метрики появятся после запуска сети.</div>');
   bars.querySelectorAll('.bar-row[data-plane]').forEach(el => el.onclick = () => setPlane(+el.dataset.plane));
   const t = $('#metrics-tables');
-  t.innerHTML = `<table><tr><th>z</th><th>мм</th><th>SSIM</th><th>Pearson</th><th>SSIM без норм.</th></tr>` +
-    rows.map(r => `<tr data-plane="${r.plane - 1}"><td>z${r.plane}</td><td>${r.z_mm.toFixed(1)}</td>
+  t.innerHTML = rows.length ? `<table><tr><th>z</th><th>мм</th><th>SSIM</th><th>Pearson</th><th>SSIM без норм.</th></tr>` +
+    rows.map(r => `<tr data-plane="${r.plane - 1}"><td>z${r.plane}</td><td>${fmt(r.z_mm, 1)}</td>
       <td>${fmt(r.ssim, 4)}</td><td>${fmt(r.pcc, 4)}</td><td>${fmt(r.ssim_raw, 4)}</td></tr>`).join('') +
     `<tr class="sum"><td>∅</td><td></td><td>${fmt(mean.ssim, 4)}</td><td>${fmt(mean.pcc, 4)}</td>
-      <td>${fmt(mean.ssim_raw, 4)}</td></tr></table>`;
+      <td>${fmt(mean.ssim_raw, 4)}</td></tr></table>` : '';
   t.querySelectorAll('tr[data-plane]').forEach(el => el.onclick = () => setPlane(+el.dataset.plane));
 }
 
@@ -711,7 +759,7 @@ function renderCurves() {
       pts: hist.val.map(r => ({ x: r.step, y: r[key] })) });
   }
   const test = hist.test || {};
-  const mean = (D.manifest.metrics || {}).mean || {};
+  const mean = ((DEMO || D).manifest.metrics || {}).mean || {};
   const testVal = key === 'ssim' ? mean.ssim : mean.pcc;
   const all = series.flatMap(s => s.pts.map(p => p.y)).concat([testVal]);
   let lo = Math.min(...all), hi = Math.max(...all);
@@ -851,7 +899,7 @@ function renderIterGrid() {
   if (!box) return;
   box.innerHTML = '';
   const row = D.manifest.phys_steps || [];
-  if (!row.length) return;
+  if (!row.length) { box.innerHTML = '<div class="hint">Траектория физического слоя показана для сдаваемого набора.</div>'; return; }
   const picks = [0, Math.floor(row.length / 3), Math.floor(2 * row.length / 3), row.length - 1];
   picks.forEach((p, i) => {
     const cell = document.createElement('div');
@@ -877,83 +925,125 @@ function stepIter(dt) {
 
 /* =================================================================== 4. МОДЕЛЬ */
 async function ensureGraph() {
-  if (RUN.graph || !RUN.available) return drawNetGraph();
-  try { RUN.graph = await (await fetch('api/model/graph', { cache: 'no-store' })).json(); }
-  catch (e) { RUN.graph = null; }
-  drawNetGraph();
-  drawWeights();
+  if (!RUN.available) { drawNetGraph(); drawHistMap(); return; }
+  if (RUN.graph && RUN.graph.layers && RUN.graph.layers.length) {
+    drawNetGraph(); drawWeights(); drawHistMap(); return;
+  }
+  if (RUN.graphPromise) return RUN.graphPromise;
+  $('#model-status').textContent = 'Читаю веса outputs/best.pt…';
+  RUN.graphPromise = (async () => {
+    try {
+      RUN.graph = await fetchJSON('api/model/graph', { cache: 'no-store' });
+      RUN.graphError = null;
+      populateLayerSelect();
+    } catch (e) {
+      RUN.graph = null; RUN.graphError = String(e.message || e);
+    } finally {
+      RUN.graphPromise = null;
+      drawNetGraph(); drawWeights(); drawHistMap();
+    }
+  })();
+  return RUN.graphPromise;
+}
+
+function populateLayerSelect() {
+  const sel = $('#hist-layer');
+  if (!sel || !RUN.graph) return;
+  sel.innerHTML = RUN.graph.layers.map((l, i) =>
+    `<option value="${i}">${escapeHtml(l.name.replace(/^net\./, ''))} · ${l.shape.join('×')}</option>`).join('');
+  sel.onchange = () => { S.histLayer = +sel.value; drawHistMap(); };
+  S.histLayer = clamp(S.histLayer || 0, 0, RUN.graph.layers.length - 1);
+  sel.value = S.histLayer;
 }
 
 async function ensureAct() {
-  if (RUN.act || !RUN.available) return drawAct();
-  const url = `api/model/act${RUN.currentSet ? '?set=' + encodeURIComponent(RUN.currentSet) : ''}`;
-  try {
-    RUN.act = await (await fetch(url, { cache: 'no-store' })).json();
-  } catch (e) { RUN.act = null; }
-  if (!RUN.act || !RUN.act.stages || !RUN.act.stages.length) {
-    // первый расчёт на CPU занимает несколько секунд — пробуем ещё раз
-    await new Promise(r => setTimeout(r, 1500));
+  const sid = RUN.currentSet || 'default';
+  if (!RUN.available) { drawAct(); return; }
+  if (RUN.act && RUN.actSet === sid && RUN.act.stages.length) { drawAct(); return; }
+  if (RUN.actPromise) return RUN.actPromise;
+  RUN.act = null; RUN.actError = null; S.actIdx = 0; drawAct();
+  RUN.actPromise = (async () => {
     try {
-      RUN.act = await (await fetch(url, { cache: 'no-store' })).json();
-    } catch (e) { /* остаёмся без активаций */ }
-  }
-  drawAct();
+      const data = await fetchJSON(`api/model/act?set=${encodeURIComponent(sid)}`, { cache: 'no-store' });
+      if (sid === (RUN.currentSet || 'default')) { RUN.act = data; RUN.actSet = sid; }
+    } catch (e) { RUN.actError = String(e.message || e); }
+    finally { RUN.actPromise = null; drawAct(); }
+  })();
+  return RUN.actPromise;
 }
 
 function drawNetGraph() {
   const cv = $('#net-canvas');
   if (!cv) return;
-  const W = cv.width = cv.clientWidth * dpr();
+  const W = cv.width = Math.max(320, cv.clientWidth) * dpr();
   const H = cv.height = 420 * dpr();
   const ctx = cv.getContext('2d');
   ctx.clearRect(0, 0, W, H);
   const g = RUN.graph;
+  const status = $('#model-status');
   if (!g || !g.layers || !g.layers.length) {
-    ctx.fillStyle = 'rgba(160,185,215,.7)';
-    ctx.font = `${12 * dpr()}px ui-monospace, monospace`;
-    ctx.fillText('граф весов доступен под пультом: python scripts/serve_dashboard.py', 12, 26);
+    const text = RUN.graphError ? `Не удалось прочитать веса: ${RUN.graphError}` :
+      RUN.available ? 'Загрузка весов…' : 'Веса доступны через сервер, не в офлайн-файле';
+    clearCanvas(cv, text);
+    if (status) status.textContent = text;
+    $('#net-probe').textContent = RUN.graphError || 'outputs/best.pt';
     return;
   }
-  // узлы по группам: энкодер (вниз), декодер (вверх), голова
-  const groups = { encoder: [], decoder: [], head: [] };
-  g.layers.forEach(l => (groups[l.group] || groups.head).push(l));
+  // Один узел — блок сети, а не 67 тензоров в одной точке.
+  const blocks = g.blocks || [];
+  const enc = blocks.filter(b => b.group === 'encoder');
+  const dec = blocks.filter(b => b.group === 'decoder');
   const stage = [];
-  groups.encoder.forEach((l, i) => stage.push({ l, x: 0.08 + 0.22 * i / Math.max(1, groups.encoder.length - 1), y: 0.18 }));
-  groups.decoder.forEach((l, i) => stage.push({ l, x: 0.08 + 0.22 * i / Math.max(1, groups.decoder.length - 1), y: 0.66 }));
-  groups.head.forEach((l, i) => stage.push({ l, x: 0.78 + 0.16 * i / Math.max(1, groups.head.length - 1), y: 0.42 }));
-  const R = 5.5 * dpr();
-  stage.forEach((n, i) => {
-    const x = n.x * W, y = n.y * H;
-    const act = Math.sin(2 * Math.PI * (S.netT / 1000 + i / stage.length));
-    const glow = S.netPlaying ? 0.45 + 0.55 * Math.max(0, act) : 0.5;
-    ctx.beginPath();
-    ctx.fillStyle = `rgba(77,214,193,${(0.35 + 0.6 * clamp(n.l.abs_mean * 8, 0, 1) * glow).toFixed(3)})`;
-    ctx.arc(x, y, R * (1 + 0.5 * n.l.numel / Math.max(...g.layers.map(l => l.numel))), 0, 7);
-    ctx.fill();
-    if (i % Math.ceil(stage.length / 14) === 0) {
-      ctx.fillStyle = 'rgba(170,195,220,.8)';
-      ctx.font = `${8 * dpr()}px ui-monospace, monospace`;
-      ctx.fillText(n.l.name.replace(/^net\./, '').slice(0, 16), x - 24, y - 10 * dpr());
-    }
-  });
-  // рёбра внутри группы
-  (g.edges || []).forEach(([a, b]) => {
-    const A = stage.find(s => s.l.name === a), B = stage.find(s => s.l.name === b);
+  enc.forEach((l, i) => stage.push({ l, x: 0.09 + 0.72 * i / Math.max(1, enc.length - 1), y: 0.27 }));
+  dec.forEach((l, i) => stage.push({ l, x: 0.70 - 0.51 * i / Math.max(1, dec.length - 1), y: 0.70 }));
+  const head = blocks.find(b => b.group === 'head');
+  if (head) stage.push({ l: head, x: 0.91, y: 0.70 });
+  const byName = Object.fromEntries(stage.map(n => [n.l.name, n]));
+  const maxN = Math.max(...blocks.map(b => b.numel), 1);
+  // Рёбра до узлов; skip-связи пунктиром.
+  (g.edges || []).forEach(([a, b, kind]) => {
+    const A = byName[a], B = byName[b];
     if (!A || !B) return;
     ctx.beginPath(); ctx.moveTo(A.x * W, A.y * H); ctx.lineTo(B.x * W, B.y * H);
-    ctx.strokeStyle = 'rgba(90,130,175,.25)'; ctx.lineWidth = 1 * dpr(); ctx.stroke();
+    ctx.setLineDash(kind === 'skip' ? [5 * dpr(), 5 * dpr()] : []);
+    ctx.strokeStyle = kind === 'skip' ? 'rgba(255,179,71,.55)' : 'rgba(122,162,255,.6)';
+    ctx.lineWidth = 1.5 * dpr(); ctx.stroke();
   });
-  ctx.fillStyle = 'rgba(160,185,215,.65)';
-  ctx.font = `${9 * dpr()}px ui-monospace, monospace`;
-  ctx.fillText('энкодер', 8, H * 0.14);
-  ctx.fillText('декодер', 8, H * 0.62);
-  ctx.fillText('голова', W * 0.76, H * 0.38);
-  $('#net-probe').innerHTML = `параметров <b>${(g.params / 1e6).toFixed(2)} М</b> · слоёв ${g.layers.length}`;
+  ctx.setLineDash([]);
+  stage.forEach((n, i) => {
+    const x = n.x * W, y = n.y * H;
+    const r = (10 + 10 * Math.sqrt(n.l.numel / maxN)) * dpr();
+    const pulse = S.netPlaying ? 0.65 + 0.35 * Math.sin(S.netT / 350 - i) : 0.85;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.fillStyle = n.l.group === 'decoder' ? `rgba(122,162,255,${pulse})` : `rgba(77,214,193,${pulse})`;
+    ctx.fill();
+    ctx.strokeStyle = '#203b55'; ctx.lineWidth = 2 * dpr(); ctx.stroke();
+    ctx.textAlign = 'center'; ctx.fillStyle = '#dce9fa';
+    ctx.font = `${10 * dpr()}px system-ui, sans-serif`;
+    ctx.fillText(n.l.label, x, y - r - 8 * dpr());
+    ctx.fillStyle = '#8ea1c2'; ctx.font = `${9 * dpr()}px ui-monospace, monospace`;
+    ctx.fillText((n.l.numel / 1e6).toFixed(2) + ' М', x, y + r + 13 * dpr());
+  });
+  ctx.textAlign = 'left'; ctx.fillStyle = '#8ea1c2'; ctx.font = `${10 * dpr()}px system-ui, sans-serif`;
+  ctx.fillText('Энкодер: сжатие признаков', 12 * dpr(), 20 * dpr());
+  ctx.fillText('Декодер + skip-связи (пунктир)', 12 * dpr(), H * 0.52);
+  cv.onclick = e => {
+    const rect = cv.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width * W, y = (e.clientY - rect.top) / rect.height * H;
+    let best = null, dist = Infinity;
+    stage.forEach(n => { const d = Math.hypot(x - n.x * W, y - n.y * H); if (d < dist) { dist = d; best = n; } });
+    if (!best || dist > 38 * dpr()) return;
+    const idx = g.layers.findIndex(l => l.block === best.l.name);
+    if (idx >= 0) { S.histLayer = idx; $('#hist-layer').value = idx; drawHistMap(); }
+  };
+  const mb = g.checkpoint ? (g.checkpoint.size / 1048576).toFixed(1) : '—';
+  if (status) status.textContent = `✓ outputs/best.pt загружен · ${mb} МБ`;
+  $('#net-probe').innerHTML = `<b>${(g.params / 1e6).toFixed(2)} М</b> параметров · ${g.layers.length} тензоров · ${blocks.length} блоков`;
 }
 
 function stepNet(dt) {
   if (!S.netPlaying) return;
-  S.netT += dt;
+  S.netT += dt * (S.netSpeed || 1);
   drawNetGraph();
 }
 
@@ -962,15 +1052,16 @@ function drawAct() {
   if (!box) return;
   const act = RUN.act;
   if (!act || !act.stages || !act.stages.length) {
-    box.innerHTML = `<div class="hint">активации доступны под пультом</div>`;
+    box.innerHTML = `<div class="hint">${escapeHtml(RUN.actError || (RUN.available ? 'Считаю активации выбранного комплекта…' : 'Активации доступны через сервер'))}</div>`;
     return;
   }
-  if (box.children.length !== act.stages.length) {
+  if (box.dataset.sig !== RUN.actSet + ':' + act.stages.length) {
+    box.dataset.sig = RUN.actSet + ':' + act.stages.length;
     box.innerHTML = '';
     act.stages.forEach((st, i) => {
       const d = document.createElement('div');
       d.className = 'act-cell';
-      d.innerHTML = `<canvas width="64" height="64"></canvas><span>${st.name}</span>`;
+      d.innerHTML = `<canvas width="64" height="64"></canvas><span>${escapeHtml(st.name)}</span>`;
       d.onclick = () => { S.actIdx = i; drawAct(); };
       box.appendChild(d);
     });
@@ -997,7 +1088,7 @@ function drawAct() {
 }
 
 function stepAct(dt) {
-  if (!S.actPlaying || !RUN.act || !RUN.act.stages) return;
+  if (!S.actPlaying || !RUN.act || !RUN.act.stages || !RUN.act.stages.length) return;
   S.actT += dt;
   if (S.actT > 320) {
     S.actT = 0;
@@ -1097,168 +1188,286 @@ function markDone() {
 
 async function refreshRunState() {
   if (!RUN.available) return;
-  try {
-    const js = await (await fetch('api/state', { cache: 'no-store' })).json();
-    RUN.state = js.state; RUN.files = js.files; RUN.metrics = js.metrics;
-    RUN.sets = js.sets || []; RUN.summary = js.summary || RUN.summary;
-  } catch (e) { return; }
-  const st = RUN.state || {};
-  const busy = !!(st.running || st.title);
-  document.querySelectorAll('.rp-stage').forEach(b =>
-    b.classList.toggle('active', b.dataset.stage === st.running));
+  let js;
+  try { js = await fetchJSON('api/state', { cache: 'no-store' }); }
+  catch (e) { return; }
+  RUN.state = js.state || {}; RUN.files = js.files || {}; RUN.metrics = js.metrics;
+  RUN.sets = js.sets || []; RUN.summary = js.summary || RUN.summary;
+  const st = RUN.state;
+  const busy = !!st.running;
+  document.querySelectorAll('.rp-stage').forEach(b => {
+    b.classList.toggle('active', b.dataset.stage === st.running);
+    b.disabled = busy;
+  });
+  $$('#rp-pipelines button').forEach(b => { b.disabled = busy; });
   const badge = $('#runner-badge');
-  badge.classList.toggle('hidden', !BUSY_LATCH && !busy);
+  badge.classList.toggle('hidden', !RUN.available);
   badge.textContent = busy ? `⏳ ${st.title || st.running}` : 'пульт';
-  if (busy) flashStatus('выполняется', 'busy');
+  if (busy) flashStatus(`выполняется: ${st.title || st.running}`, 'busy');
   else if (st.returncode === 0) flashStatus('готово', 'ok');
   else if (st.returncode === -15 || st.returncode === -9) flashStatus('остановлено', 'ok');
-  else if (st.returncode) flashStatus(`код ${st.returncode}`, 'fail');
+  else if (st.returncode) flashStatus(`ошибка · код ${st.returncode}`, 'fail');
   else flashStatus('готов', 'ok');
-  const stop = $('#rp-stop');
-  if (stop) stop.disabled = !busy;
-  BUSY_LATCH = busy;
+  updateJobButtons();
+  if (busy && !RUN.poll && !RUN.starting) startLogPoll(st.job);
+  // После перезагрузки страницы тоже подхватываем уже идущий расчёт.
+  if (busy && st.kind === 'infer' && st.set_id) RUN.currentSet = st.set_id;
 }
 
 function flashStatus(text, kind) {
   const el = $('#rp-status');
-  if (!el) return;
-  el.textContent = text;
-  el.className = 'rp-status' + (kind === 'busy' ? ' busy' : kind === 'fail' ? ' fail' : '');
+  if (el) {
+    el.textContent = text;
+    el.className = 'rp-status' + (kind === 'busy' ? ' busy' : kind === 'fail' ? ' fail' : '');
+  }
+  const test = $('#test-status');
+  if (test) { test.textContent = text; test.className = 'inline-status ' + (kind || 'ok'); }
 }
 
-let BUSY_LATCH = false;
-
 async function runStart(payload) {
-  if (!RUN.available) { setTab('run'); return; }
+  if (!RUN.available) { setTab('run'); notify('Для запуска задач нужен сервер.', 'fail'); return; }
+  if (RUN.starting || RUN.state.running) { notify('Дождитесь окончания текущей задачи.', 'busy'); return; }
   setTab('run');
-  $('#rp-log').textContent = '';
-  RUN.since = 0;
+  RUN.starting = true; updateJobButtons();
   try {
-    const r = await fetch('api/run', {
+    const js = await fetchJSON('api/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const js = await r.json();
-    if (!js.ok) { flashStatus(js.message || 'не удалось', 'fail'); return; }
     flashStatus('выполняется', 'busy');
-    startLogPoll();
-    refreshRunState();
+    startLogPoll(js.job);
+    await refreshRunState();
   } catch (e) {
-    flashStatus('нет связи с пультом', 'fail');
-  }
+    flashStatus(String(e.message || e), 'fail'); notify(String(e.message || e), 'fail');
+  } finally { RUN.starting = false; updateJobButtons(); }
 }
 
-function startLogPoll() {
-  if (RUN.poll) return;
-  if (location.protocol === 'file:') return;   // офлайн: пульта нет, не стучимся
+async function runSelectedSet() {
+  if (!RUN.available) { notify('Откройте дашборд через сервер: кнопке нужен доступ к весам.', 'fail'); return; }
+  if (RUN.starting || RUN.state.running) { notify('Уже выполняется задача. Дождитесь её окончания или нажмите «стоп».', 'busy'); return; }
+  await ensureCurrentSet();
+  const sid = RUN.currentSet;
+  if (!sid) { notify('Сначала загрузите комплект изображений.', 'fail'); return; }
+  RUN.starting = true; updateJobButtons();
+  notify(`Запускаю сеть для ${setLabel(sid)}…`, 'busy');
+  try {
+    const js = await fetchJSON('api/infer', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ set: sid }),
+    });
+    RUN.state = { ...RUN.state, running: 'infer_set.py', kind: 'infer', set_id: sid, job: js.job };
+    flashStatus('сеть считает · результат обновится автоматически', 'busy');
+    startLogPoll(js.job);
+  } catch (e) {
+    flashStatus(String(e.message || e), 'fail'); notify(String(e.message || e), 'fail');
+  } finally { RUN.starting = false; updateJobButtons(); }
+}
+
+function stopLogPoll() {
+  if (RUN.poll) clearTimeout(RUN.poll);
+  RUN.poll = null;
+  RUN.pollSeq = (RUN.pollSeq || 0) + 1;
+}
+
+function startLogPoll(job) {
+  if (location.protocol === 'file:') return;
+  stopLogPoll();
+  RUN.since = 0; RUN.job = job || null;
+  $('#rp-log').textContent = '';
+  const seq = RUN.pollSeq;
   const step = async () => {
-    let js = null;
-    try {
-      js = await (await fetch(`api/log?since=${RUN.since}`, { cache: 'no-store' })).json();
-    } catch (e) { RUN.poll = setTimeout(step, 1200); return; }
+    if (seq !== RUN.pollSeq) return;
+    let js;
+    try { js = await fetchJSON(`api/log?since=${RUN.since}`, { cache: 'no-store' }); }
+    catch (e) { if (seq === RUN.pollSeq) RUN.poll = setTimeout(step, 1200); return; }
+    if (seq !== RUN.pollSeq) return;
+    if (RUN.job && js.job !== RUN.job) { RUN.poll = setTimeout(step, 300); return; }
+    RUN.job = js.job;
     if (js.lines && js.lines.length) {
       const pre = $('#rp-log');
       pre.insertAdjacentHTML('beforeend', escapeHtml(js.lines.join('')));
       if (pre.textContent.length > 60000) pre.textContent = pre.textContent.slice(-40000);
       RUN.since = js.total;
       pre.scrollTop = pre.scrollHeight;
+      const last = js.lines.filter(l => l.includes('физика:')).pop();
+      if (last && js.kind === 'infer') notify(last.trim(), 'busy');
     }
-    if (js.running) { RUN.poll = setTimeout(step, 700); refreshRunState(); }
-    else {
+    if (js.running) {
+      RUN.state = { ...RUN.state, ...js };
+      updateJobButtons();
+      RUN.poll = setTimeout(step, 700);
+    } else {
       RUN.poll = null;
       await refreshRunState();
+      const rc = RUN.state.returncode;
       $('#rp-log').insertAdjacentHTML('beforeend', '\n— завершено —\n');
-      await afterJob();
+      if (rc === 0) {
+        notify('Готово. Обновляю маску, дифракцию и метрики…', 'busy');
+        await afterJob(js);
+        notify(`Готово · ${setLabel(js.set_id || RUN.currentSet)}. Маска и дифракция обновлены.`, 'ok');
+      } else if (rc === -15 || rc === -9) {
+        notify('Расчёт остановлен. Прежние результаты сохранены.', 'ok');
+        await refreshBucket();
+      } else {
+        const detail = (js.lines || []).slice(-4).join(' ').trim();
+        notify(`Расчёт завершился с ошибкой (код ${rc}). ${detail} Полный лог — на вкладке «Запуск».`, 'fail');
+      }
     }
   };
-  RUN.poll = setTimeout(step, 300);
+  RUN.poll = setTimeout(step, 150);
 }
 
-/** После этапа: перечитать бандл/комплекты/метрики, если они изменились. */
-async function afterJob() {
+async function afterJob(js = {}) {
   await refreshBucket();
+  if (js.kind === 'infer' && js.set_id) {
+    RUN.currentSet = js.set_id;
+    RUN.defaultDirty = js.set_id === 'default';
+    await loadSetIntoPhysics(js.set_id, true);
+    RUN.act = null; RUN.actSet = null;
+    if (S.tab === 'model') ensureAct();
+  } else if (!RUN.viewId) {
+    await reloadBundle();
+  }
+  renderSetSelect(); renderTestTab();
 }
 
 async function refreshBucket() {
-  try {
-    const st = await (await fetch('api/state', { cache: 'no-store' })).json();
-    RUN.sets = st.sets || [];
-    RUN.summary = st.summary || RUN.summary;
-    const before = JSON.stringify(RUN.files || {});
-    RUN.files = st.files || {};
-    if (before !== JSON.stringify(RUN.files)) await reloadBundle();
-    RUN.history = await (await fetch('api/history', { cache: 'no-store' })).json();
-    RUN.graph = null; RUN.act = null;
-    renderTestTab();
-    renderCurves();
-  } catch (e) { /* тихо */ }
+  const st = await fetchJSON('api/state', { cache: 'no-store' });
+  RUN.sets = st.sets || []; RUN.summary = st.summary || RUN.summary;
+  const before = JSON.stringify(RUN.files || {});
+  RUN.files = st.files || {}; RUN.state = st.state || {};
+  if (before !== JSON.stringify(RUN.files)) {
+    RUN.graph = null; RUN.act = null; RUN.actSet = null;
+    try { RUN.history = await fetchJSON('api/history', { cache: 'no-store' }); } catch (e) { /* необязательно */ }
+    if (!RUN.viewId) await reloadBundle();
+    if (S.tab === 'model') { ensureGraph(); ensureAct(); }
+  }
+  renderSetSelect(); renderTestTab(); renderCurves(); updateJobButtons();
 }
 
 async function reloadBundle() {
-  try {
-    const r = await fetch('data_bundle.js', { cache: 'no-store' });
-    const code = await r.text();
-    if (!code || code.length < 1000) return;
-    const el = document.createElement('script');
-    el.textContent = code;
-    document.head.appendChild(el);
-    CACHE.frames = {}; CACHE.small = {};
-    await loadBundle();
-    renderHeader(); renderSamples(); renderDoe(); renderPropStatic(); setZ(S.z);
-    renderPlanes(); renderBitbar(); renderProfiles(); renderMetrics(); renderCurves();
-    renderTrain(); renderIterGrid();
-  } catch (e) { /* остаёмся на прежних данных */ }
+  const r = await fetch('data_bundle.js', { cache: 'no-store' });
+  if (!r.ok) throw new Error('не удалось прочитать data_bundle.js');
+  const code = await r.text();
+  const el = document.createElement('script');
+  el.textContent = code;
+  document.head.appendChild(el);
+  el.remove();
+  await loadBundle(); rememberDemo();
+  RUN.viewId = null;
+  renderActiveSet();
 }
 
 /* --------------------------------------------------------- загрузка картинок */
 async function uploadFiles(fileList) {
   if (!fileList || !fileList.length) return;
+  if (!RUN.available) { hint('Для загрузки нужен сервер', true); notify('Загрузка доступна через сервер.', 'fail'); return; }
+  const files = [...fileList];
+  if (files.length > 4) { hint('Не больше четырёх файлов', true); notify('Выберите от одного до четырёх файлов.', 'fail'); return; }
   const fd = new FormData();
-  [...fileList].slice(0, 4).forEach((f, i) => fd.append(`file${i}`, f, f.name));
-  hint('загрузка…');
+  files.forEach((f, i) => fd.append(`file${i}`, f, f.name));
+  hint('загрузка…'); $('#pick-files').disabled = true;
   try {
-    const r = await fetch('api/sets', { method: 'POST', body: fd });
-    const js = await r.json();
-    if (!js.ok) { hint(js.message || 'не удалось', true); return; }
+    const js = await fetchJSON('api/sets', { method: 'POST', body: fd });
     RUN.currentSet = js.id;
     await refreshBucket();
-    const st = await (await fetch('api/state')).json();
-    RUN.sets = st.sets || [];
+    const loaded = await loadSetIntoPhysics(js.id);
+    if (!loaded) return;
     hint(`комплект ${js.id} готов · ${js.info.sources.length} файл(ов) · жмите «прогнать сеть»`);
-    renderSetSelect();
+    notify('Картинка загружена. Нажмите «прогнать сеть», чтобы рассчитать её дифракцию.', 'ok');
     setTab('test');
-    await loadSetIntoPhysics(js.id);
-  } catch (e) { hint('нет связи с пультом', true); }
+  } catch (e) { hint(String(e.message || e), true); notify(String(e.message || e), 'fail'); }
+  finally { $('#pick-files').disabled = false; $('#file-input').value = ''; }
 }
 
-async function loadSetIntoPhysics(setId) {
-  // подтягиваем цели комплекта в панель «физика» и в бандл-данные
-  const imgs = await Promise.all([1, 2, 3, 4].map(i => new Promise(res => {
-    const im = new Image();
-    // страховка: битая или не отданная картинка не должна вешать интерфейс
-    const timer = setTimeout(() => res(null), 4000);
-    im.onload = () => { clearTimeout(timer); res(im); };
-    im.onerror = () => { clearTimeout(timer); res(null); };
-    im.src = `api/asset?set=${encodeURIComponent(setId)}&name=target_${i}.png&t=${Date.now()}`;
-  })));
-  if (imgs.some(i => !i)) {
-    // картинки комплекта не дошли — показываем прежние цели, но вкладку не ломаем
-    setTab('test');
-    return;
+async function ensureCurrentSet() {
+  if (!RUN.currentSet && RUN.available) {
+    if (!RUN.sets.length) await refreshBucket();
+    RUN.currentSet = (RUN.sets.find(s => s.id === 'default') || {}).id || null;
   }
-  const arr = new Uint8Array(N * N * 4);
-  imgs.forEach((im, k) => {
-    const c = document.createElement('canvas');
-    c.width = c.height = N;
-    const ctx = c.getContext('2d');
-    ctx.drawImage(im, 0, 0);
-    const d = ctx.getImageData(0, 0, N, N).data;
-    for (let i = 0; i < N * N; i++) arr[k * N * N + i] = d[i * 4];
+}
+
+async function selectSet(id) {
+  RUN.currentSet = id || 'default';
+  renderSetSelect();
+  const ok = await loadSetIntoPhysics(RUN.currentSet);
+  if (ok && S.tab === 'test') renderTestTab();
+}
+
+function applySetView(view) {
+  if (!DEMO) rememberDemo();
+  const buf = {};
+  // Распаковка до замены D: при ошибке текущий экран остаётся целым.
+  return Promise.all(Object.entries(view.b64).map(async ([key, value]) => {
+    buf[key] = await b64ToBufGz(value);
+  })).then(() => {
+    if (view.id !== RUN.currentSet) return;
+    const u8 = k => new Uint8Array(buf[k] || new ArrayBuffer(0));
+    const f32 = k => new Float32Array(buf[k] || new ArrayBuffer(0));
+    const stack = u8('zstack_nn');
+    const px = N * N;
+    for (let k = 1; k < Math.floor(stack.length / px); k++)
+      for (let i = 0; i < px; i++) stack[k * px + i] = (stack[k * px + i] + stack[(k - 1) * px + i]) & 255;
+    D.targets = u8('targets');
+    D.phase = { nn: f32('phase_nn'), gs: new Float32Array(0) };
+    D.doe = { nn: u8('doe_nn'), gs: new Uint8Array(0) };
+    D.recon = { nn: f32('recon_nn'), gs: new Float32Array(0) };
+    D.ssimMap = { nn: f32('ssim_map_nn'), gs: new Float32Array(0) };
+    D.zstack = { nn: stack, gs: new Uint8Array(0) };
+    D.zprobe = { nn: f32('zprobe_nn'), gs: new Float32Array(0) };
+    D.bitdepth = { nn: u8('bitdepth_nn'), gs: new Uint8Array(0) };
+    D.zgrid = f32('zgrid');
+    D.sourceSteps = u8('source_steps');
+    D.physSteps = new Uint8Array(0);
+    D.manifest = { ...DEMO.manifest, metrics: view.metrics,
+      file_metrics: { nn: view.file_metrics.nn }, phys_steps: [], phys_total: view.metrics.steps || 0,
+      source_steps: { names: view.source_names || [] }, variants: ['nn'] };
+    D.trainSteps = DEMO.trainSteps; D.trainLog = DEMO.trainLog;
+    D.trainMasks = DEMO.trainMasks; D.trainRecon = DEMO.trainRecon;
+    RUN.viewId = view.id; RUN.viewSignature = view.signature;
+    S.variant = 'nn'; S.z = 0; S.playing = false;
+    $('#prop-play').textContent = '▶';
+    renderActiveSet();
   });
-  D.targets = arr;
-  CACHE.frames = {};
-  renderSamples();
-  renderTestTab();
+}
+
+function renderActiveSet() {
+  CACHE.frames = {}; CACHE.small = {};
+  $$('#variant-switch button').forEach(b => {
+    b.classList.toggle('active', b.dataset.variant === S.variant);
+    b.disabled = b.dataset.variant === 'gs' && !!RUN.viewId;
+    b.title = b.disabled ? 'GS рассчитан только для сдаваемого набора' : '';
+  });
+  renderHeader(); renderSamples(); renderDoe(); renderPropStatic(); setZ(S.z);
+  renderPlanes(); renderBitbar(); renderProfiles(); drawSsim(); renderMetrics();
+  renderTrain(); renderIterGrid(); renderCurves(); renderSetSelect(); renderTestTab(); drawFlow();
+  const names = (D.manifest.source_steps || {}).names || [];
+  $('#flow-cap').textContent = names.join(' → ');
+  updateJobButtons();
+}
+
+async function loadSetIntoPhysics(setId, force = false) {
+  const sid = setId || 'default';
+  const seq = ++RUN.loadSeq;
+  if (sid === 'default' && DEMO && !force && !RUN.defaultDirty) {
+    Object.assign(D, DEMO); RUN.viewId = null; S.variant = 'nn';
+    renderActiveSet(); return true;
+  }
+  if (!RUN.available) { notify('Выбор комплектов доступен через сервер.', 'fail'); return false; }
+  notify(`Загружаю комплект ${sid}…`, 'busy');
+  try {
+    const view = await fetchJSON(`api/set-view?set=${encodeURIComponent(sid)}`, { cache: 'no-store' });
+    if (seq !== RUN.loadSeq || sid !== RUN.currentSet) return false;
+    await applySetView(view);
+    if (seq !== RUN.loadSeq || sid !== RUN.currentSet) return false;
+    RUN.act = null; RUN.actSet = null;
+    if (S.tab === 'model') ensureAct();
+    notify(view.note, 'ok'); hint(view.note);
+    return true;
+  } catch (e) {
+    if (seq === RUN.loadSeq) { hint(String(e.message || e), true); notify(String(e.message || e), 'fail'); }
+    return false;
+  }
 }
 
 function hint(text, bad) {
@@ -1272,18 +1481,21 @@ function renderSetSelect() {
   const sel = $('#set-select');
   if (!sel) return;
   const sets = RUN.sets || [];
-  sel.innerHTML = `<option value="">сдаваемый набор</option>` +
-    sets.map(s => `<option value="${s.id}">${s.id}</option>`).join('');
-  sel.value = RUN.currentSet || '';
-  sel.onchange = () => { RUN.currentSet = sel.value || null; if (sel.value) loadSetIntoPhysics(sel.value); };
+  sel.innerHTML = sets.length ? sets.map(s =>
+    `<option value="${escapeHtml(s.id)}">${escapeHtml(setLabel(s.id))}</option>`).join('') :
+    '<option value="default">сдаваемый набор</option>';
+  sel.value = RUN.currentSet || 'default';
+  sel.onchange = () => selectSet(sel.value);
+  $('#set-delete').disabled = !RUN.available || !RUN.currentSet || RUN.currentSet === 'default' || !!RUN.state.running;
   $('#set-delete').onclick = async () => {
-    if (!RUN.currentSet) return;
-    if (!confirm(`удалить комплект ${RUN.currentSet}?`)) return;
-    await fetch(`api/sets/delete?id=${encodeURIComponent(RUN.currentSet)}`, { method: 'POST' });
-    RUN.currentSet = null;
-    await refreshBucket();
-    renderSetSelect();
-    hint('комплект удалён');
+    const sid = RUN.currentSet;
+    if (!sid || sid === 'default' || !confirm(`Удалить комплект ${sid}?`)) return;
+    try {
+      await fetchJSON(`api/sets/delete?id=${encodeURIComponent(sid)}`, { method: 'POST' });
+      RUN.currentSet = 'default';
+      await refreshBucket(); await loadSetIntoPhysics('default');
+      hint('комплект удалён');
+    } catch (e) { notify(String(e.message || e), 'fail'); }
   };
 }
 
@@ -1350,7 +1562,7 @@ function wire() {
   $$('#variant-switch button').forEach(b => b.onclick = () => {
     S.variant = b.dataset.variant;
     $$('#variant-switch button').forEach(x => x.classList.toggle('active', x === b));
-    renderDoe(); renderPlanes(); renderMetrics(); renderProfiles(); drawSsim(); renderTrain();
+    renderDoe(); renderPlanes(); renderMetrics(); renderProfiles(); drawSsim(); renderTestTab();
   });
   $$('#plane-mode button').forEach(b => b.onclick = () => {
     S.planeMode = b.dataset.mode;
@@ -1382,19 +1594,10 @@ function wire() {
   $('#doe-flash').onclick = () => { S.quant = !S.quant; $('#doe-quant').checked = S.quant; renderDoe(); };
   $('#pick-files').onclick = () => $('#file-input').click();
   $('#file-input').onchange = e => uploadFiles(e.target.files);
-  $('#pick-demo').onclick = () => { RUN.currentSet = null; hint('показан сдаваемый набор'); renderSetSelect(); };
+  $('#pick-demo').onclick = () => selectSet('default');
   $('#flow-play').onclick = playFlow;
-  $('#test-run').onclick = () => {
-    if (!RUN.available) { flashStatus('нужен пульт', 'fail'); return; }
-    if (!RUN.currentSet) { setTab('physics'); hint('сначала загрузите комплект', true); return; }
-    fetch('api/infer', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ set: RUN.currentSet }),
-    }).then(r => r.json()).then(js => {
-      if (!js.ok) { flashStatus(js.message, 'fail'); return; }
-      startLogPoll();
-    });
-  };
+  $('#test-run').onclick = runSelectedSet;
+  $('#physics-run').onclick = runSelectedSet;
   $('#act-play').onclick = () => {
     S.actPlaying = !S.actPlaying;
     $('#act-play').textContent = S.actPlaying ? '⏸' : '▶';
@@ -1406,14 +1609,14 @@ function wire() {
   };
   $('#net-speed').oninput = e => { S.netSpeed = +e.target.value; };
   $('#rp-stop').onclick = async () => {
+    if (!RUN.available) { flashStatus('нужен сервер', 'fail'); return; }
     flashStatus('останавливаю…', 'busy');
     try {
       const r = await fetch('api/stop', { method: 'POST' });
       const js = await r.json();
       flashStatus(js.stopped ? 'остановлено' : 'нечего останавливать', js.stopped ? 'ok' : 'fail');
-      RUN.poll = null;
       await refreshRunState();
-    } catch (e) { flashStatus('нет связи', 'fail'); }
+    } catch (e) { flashStatus('нет связи', 'fail'); notify('Нет связи с сервером.', 'fail'); }
   };
   $('#rp-copy').onclick = () => {
     const t = $('#rp-log').textContent;
@@ -1457,28 +1660,33 @@ function wire() {
 function drawHistMap() {
   const cv = $('#hist-canvas');
   if (!cv) return;
-  const W = cv.width = cv.clientWidth * dpr();
+  const W = cv.width = Math.max(300, cv.clientWidth) * dpr();
   const H = cv.height = 220 * dpr();
   const ctx = cv.getContext('2d');
   ctx.clearRect(0, 0, W, H);
   const g = RUN.graph;
   if (!g || !g.layers || !g.layers.length) {
-    ctx.fillStyle = 'rgba(160,185,215,.7)';
-    ctx.font = `${11 * dpr()}px ui-monospace, monospace`;
-    ctx.fillText('гистограммы весов доступны под пультом', 10, 20);
+    clearCanvas(cv, RUN.graphError || 'Гистограммы появятся после чтения весов');
+    $('#hist-probe').textContent = RUN.graphError || 'Нет данных о весах';
     return;
   }
-  const rows = Math.min(g.layers.length, 28);
-  const rh = H / rows;
-  for (let r = 0; r < rows; r++) {
-    const l = g.layers[Math.floor(r * g.layers.length / rows)];
-    l.hist.forEach((v, i) => {
-      const x = (i / l.hist.length) * W;
-      ctx.fillStyle = `rgba(122,162,255,${(0.08 + 0.9 * v).toFixed(3)})`;
-      ctx.fillRect(x, r * rh + 1, W / l.hist.length, rh - 2);
-    });
-  }
-  $('#hist-probe').innerHTML = `${rows} слоёв × ${g.layers[0].hist.length} бинов`;
+  const index = clamp(S.histLayer || 0, 0, g.layers.length - 1);
+  const l = g.layers[index], hist = l.hist || [];
+  const left = 16 * dpr(), right = W - 16 * dpr(), top = 30 * dpr(), bottom = H - 30 * dpr();
+  const bw = (right - left) / Math.max(1, hist.length);
+  ctx.strokeStyle = '#2a3d59'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(left, bottom); ctx.lineTo(right, bottom); ctx.stroke();
+  hist.forEach((v, i) => {
+    const h = Math.max(1, v) * (bottom - top);
+    ctx.fillStyle = '#7aa2ff';
+    ctx.fillRect(left + i * bw + 1, bottom - h, Math.max(1, bw - 2), h);
+  });
+  ctx.fillStyle = '#dce9fa'; ctx.font = `${11 * dpr()}px ui-monospace, monospace`;
+  ctx.fillText(l.name.replace(/^net\./, ''), left, 17 * dpr());
+  ctx.fillStyle = '#8ea1c2'; ctx.font = `${10 * dpr()}px ui-monospace, monospace`;
+  ctx.fillText(fmt(l.min, 4), left, H - 9 * dpr());
+  ctx.textAlign = 'right'; ctx.fillText(fmt(l.max, 4), right, H - 9 * dpr()); ctx.textAlign = 'left';
+  $('#hist-probe').innerHTML = `${l.shape.join('×')} · ${l.numel.toLocaleString('ru-RU')} значений · mean <b>${fmt(l.mean, 5)}</b> · std <b>${fmt(l.std, 5)}</b> · ненулевых ${fmt(l.nonzero * 100, 1)}%`;
 }
 
 /* =================================================================== main */
@@ -1493,7 +1701,9 @@ async function main() {
        <br><small>${escapeHtml(err)}</small></div>`);
     return;
   }
+  rememberDemo();
   await probeRunner();
+  await ensureCurrentSet();
   if (RUN.available) {
     try { RUN.history = await (await fetch('api/history', { cache: 'no-store' })).json(); } catch (e) { RUN.history = null; }
   }
@@ -1518,8 +1728,11 @@ async function main() {
     ? `пульт · ${(RUN.python || '').split('/').slice(-3).join('/')}`
     : `офлайн · seed ${D.manifest.constants.seed}`;
   setTab('physics');
+  updateJobButtons();
+  if (RUN.state.running) startLogPoll(RUN.state.job);
   requestAnimationFrame(tick);
 }
 
-window.HDOE = { S, D, RUN, setTab, renderMetrics, renderCurves, uploadFiles, refreshBucket };
+window.HDOE = { S, D, RUN, setTab, renderMetrics, renderCurves, uploadFiles, refreshBucket,
+  selectSet, loadSetIntoPhysics, runSelectedSet, ensureGraph, ensureAct, drawHistMap };
 document.addEventListener('DOMContentLoaded', main);

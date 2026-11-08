@@ -84,7 +84,8 @@ def main() -> int:
     if not os.path.exists(args.ckpt):
         raise SystemExit(f"нет чекпоинта {args.ckpt} — сначала обучите сеть "
                          f"(python scripts/train_gpu.py)")
-    ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+    torch.set_num_threads(min(4, os.cpu_count() or 2))
+    ck = torch.load(args.ckpt, map_location="cpu", weights_only=True)
     net = build_net(ck.get("arch") or dict(width=48, depth=5))
     net.load_state_dict(ck["model"])
     net.eval()
@@ -99,7 +100,14 @@ def main() -> int:
                            gain_end=float(pk.get("gain_end", 0.02)))
     pipe.to(dev)
     pipe.eval()
+    print(f"веса: {args.ckpt}; устройство: {dev}; K={steps}", flush=True)
     t0 = time.time()
+    if pipe.refiner is not None:
+        every = max(1, steps // 20)
+        def progress(k, total, loss):
+            if k % every == 0 or k == total:
+                print(f"физика: {k}/{total} · loss {loss:.4f} · {time.time() - t0:.1f} с", flush=True)
+        pipe.refiner.on_step = progress
     with torch.no_grad():
         _, phi = pipe(torch.as_tensor(targets, dtype=torch.float32)[None].to(dev))
     secs = time.time() - t0

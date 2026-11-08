@@ -71,6 +71,7 @@ setTimeout(() => { console.log('\nТАЙМАУТ 240 с: проверка не �
   };
   window.HTMLCanvasElement.prototype.toBlob = function (cb) { cb(new window.Blob(['x'])); };
   window.URL.createObjectURL = () => 'blob:x';
+  Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: async () => {} }, configurable: true });
   // jsdom не умеет скачивание файлов: <a download> в браузере работает, здесь — no-op
   window.HTMLAnchorElement.prototype.click = function () {};
   let drawn = 0;
@@ -136,7 +137,7 @@ setTimeout(() => { console.log('\nТАЙМАУТ 240 с: проверка не �
 
   step('кнопки');
   // ---- кнопки: каждая должна пережить клик
-  const skip = new Set(['file-input']);   // реальный выбор файлов проверяем ниже, через uploadFiles
+  const skip = new Set(['file-input', 'rp-copy']); // clipboard проверяем отдельно: его Promise не должен перебивать статус «стоп»   // реальный выбор файлов проверяем ниже, через uploadFiles
   const btns = Array.from(doc.querySelectorAll('button')).filter(b => !skip.has(b.id));
   let clicked = 0, crashed = [];
   for (const b of btns) {
@@ -151,10 +152,10 @@ setTimeout(() => { console.log('\nТАЙМАУТ 240 с: проверка не �
   step('стоп и переключатели');
   // ---- кнопка «стоп» в офлайне не должна ломать интерфейс
   doc.querySelector('#tabs button[data-tab="run"]').click();
+  await new Promise(r => setTimeout(r, 60)); // дать clipboard-промису из цикла кнопок завершиться
   doc.querySelector('#rp-stop').click();
   await new Promise(r => setTimeout(r, 60));
-  check('стоп отвечает статусом', /останов|нечего|нет связи/.test(doc.querySelector('#rp-status').textContent),
-    doc.querySelector('#rp-status').textContent);
+  check('стоп неактивен без задачи и не ломает интерфейс', doc.querySelector('#rp-stop').disabled === true);
 
   // ---- переключения NN/GS, режимы плоскостей, протокол метрик, кривые
   doc.querySelectorAll('#variant-switch button')[1].click();
@@ -175,29 +176,15 @@ setTimeout(() => { console.log('\nТАЙМАУТ 240 с: проверка не �
   check('средний SSIM в шапке', doc.querySelector('#params').textContent.includes(
     manifest.metrics.mean.ssim.toFixed(3)));
 
-  // ---- загрузка комплекта (fetch подменён)
+  // ---- офлайн: загрузка не отправляет файл в сеть и объясняет отсутствие сервера
   const uploadCalls = [];
-  window.fetch = async (url, opts = {}) => {
-    uploadCalls.push({ url, opts });
-    if (String(url).startsWith('api/sets') && opts.method === 'POST') {
-      return { ok: true, json: async () => ({ ok: true, id: '20260101-000000',
-        info: { id: '20260101-000000', sources: ['a.png'], has_targets: true } }) };
-    }
-    if (String(url).startsWith('api/state')) {
-      return { ok: true, json: async () => ({ state: {}, files: {}, sets: [
-        { id: '20260101-000000', has_targets: true, sources: ['a.png'], mean: null }] }) };
-    }
-    if (String(url).startsWith('api/history')) return { ok: true, json: async () => ({ train: [], val: [] }) };
-    if (String(url).startsWith('api/asset')) return { ok: true, json: async () => ({}) };
-    return { ok: true, json: async () => ({ ok: true }) };
-  };
-  step('загрузка файла');
+  window.fetch = async (...args) => { uploadCalls.push(args); throw new Error('offline'); };
+  step('загрузка файла offline');
   const file = new window.File([new Uint8Array([1, 2, 3])], 'photo.jpg', { type: 'image/jpeg' });
   await window.HDOE.uploadFiles([file]);
-  const post = uploadCalls.find(c => String(c.url).startsWith('api/sets') && c.opts.method === 'POST');
-  check('файл уходит на /api/sets с FormData', !!post && post.opts.body instanceof window.FormData);
-  check('комплект выбран после загрузки', window.HDOE.RUN.currentSet === '20260101-000000',
-    window.HDOE.RUN.currentSet);
+  check('offline-загрузка не делает сетевой запрос', uploadCalls.length === 0);
+  check('offline-загрузка показывает понятное сообщение', /сервер/.test(doc.querySelector('#job-notice').textContent));
+  check('демо-набор не подменён неудачной загрузкой', window.HDOE.RUN.currentSet === 'default');
 
   step('вывод');
   // ---- вывод

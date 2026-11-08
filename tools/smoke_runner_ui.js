@@ -163,7 +163,8 @@ setTimeout(() => { console.log('\nТАЙМАУТ 300 с'); process.exit(2); }, 3
   // ---------------------------------------------------------- вкладка «Тест»
   const thumbs = $('#test-thumbs').querySelectorAll('.thumb').length;
   ok('плитки целей комплекта', thumbs === 4, thumbs);
-  ok('кнопка «прогнать сеть» активна', !!$('#test-run'));
+  ok('кнопка «прогнать сеть» активна', !!$('#test-run') && !$('#test-run').disabled);
+  ok('до запуска не показана чужая демо-маска', window.HDOE.D.doe.nn.length === 0 && !$('#test-doe').querySelector('img,canvas'));
   $('#test-run').click();
   let inferDone = false;
   for (let i = 0; i < 400; i++) {                     // до 4 минут: K = 2048 шагов физики
@@ -176,11 +177,23 @@ setTimeout(() => { console.log('\nТАЙМАУТ 300 с'); process.exit(2); }, 3
   const info2 = await (await window.fetch(`api/sets/${window.HDOE.RUN.currentSet}`)).json();
   ok('метрики комплекта посчитаны', !!(info2.mean && info2.mean.ssim > 0.2),
     info2.mean ? `SSIM ${info2.mean.ssim.toFixed(3)}` : '—');
-  await wait(800);
+  // Файл metrics.json появляется раньше, чем браузер распакует новую z-стопку.
+  // Ждём именно обновления экрана, а не фиксированные 800 мс.
+  for (let i = 0; i < 150; i++) {
+    if (window.HDOE.RUN.viewSignature && window.HDOE.D.doe.nn.length === 128 * 128 &&
+        /0\.\d+/.test($('#c-ssim').textContent)) break;
+    await wait(200);
+  }
   ok('DOE показан на вкладке «Тест»', !!$('#test-doe').querySelector('img,canvas'));
   ok('счётчик SSIM заполнен', /0\.\d+/.test($('#c-ssim').textContent), $('#c-ssim').textContent);
-  window.HDOE.refreshBucket();
-  await wait(1500);
+  ok('дифракция Френеля обновлена для загруженной картинки',
+    window.HDOE.D.zstack.nn.length === window.HDOE.D.zgrid.length * 128 * 128 &&
+    window.HDOE.RUN.viewId === window.HDOE.RUN.currentSet,
+    `${window.HDOE.D.zstack.nn.length / 16384} кадров, комплект ${window.HDOE.RUN.viewId}`);
+  const uiMean = window.HDOE.D.manifest.metrics.mean;
+  ok('SSIM на экране совпадает с metrics.json комплекта',
+    Math.abs(uiMean.ssim - info2.mean.ssim) < 1e-6, `${uiMean.ssim} vs ${info2.mean.ssim}`);
+  await window.HDOE.refreshBucket();
 
   step('остальные вкладки');
   // -------------------------------------------------- остальные вкладки
@@ -206,6 +219,12 @@ setTimeout(() => { console.log('\nТАЙМАУТ 300 с'); process.exit(2); }, 3
   }
   ok('граф весов с сервера пришёл', !!(window.HDOE.RUN.graph && window.HDOE.RUN.graph.layers.length),
     window.HDOE.RUN.graph && window.HDOE.RUN.graph.layers.length);
+  ok('веса подписаны как загруженные из best.pt', /best\.pt загружен/.test($('#model-status').textContent),
+    $('#model-status').textContent);
+  ok('гистограмма имеет выбор тензора и числовые подписи',
+    $('#hist-layer').options.length === window.HDOE.RUN.graph.layers.length &&
+    /mean/.test($('#hist-probe').textContent) && /std/.test($('#hist-probe').textContent),
+    `${$('#hist-layer').options.length} тензоров; ${$('#hist-probe').textContent}`);
 
   // уборка: удаляем созданный комплект
   if (window.HDOE.RUN.currentSet) {
