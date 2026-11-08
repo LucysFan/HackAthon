@@ -111,7 +111,8 @@ def main() -> int:
     with torch.no_grad():
         _, phi = pipe(torch.as_tensor(targets, dtype=torch.float32)[None].to(dev))
     secs = time.time() - t0
-    phi_np = phi[0, 0].detach().float().cpu().numpy()
+    # float64, как в eval_splits.py: иначе квантование в 8 бит даёт другие коды
+    phi_np = phi[0, 0].detach().double().cpu().numpy()
 
     codes = np.squeeze(np.asarray(P.encode8bit(torch.as_tensor(phi_np)), dtype=np.uint8))
     doe_path = os.path.join(out, "DOE.png")
