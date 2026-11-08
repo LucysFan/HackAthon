@@ -39,6 +39,15 @@ import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# Консоль Windows могла остаться в cp1251/cp866: символы «×», «→», «■» в логах
+# и подписях тогда роняют print с UnicodeEncodeError. Пишем в UTF-8, а если
+# поток не перекодируется — хотя бы не падаем (errors="replace").
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:                                      # noqa: BLE001
+        pass
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -68,7 +77,6 @@ def have_deps() -> bool:
     try:
         import numpy  # noqa: F401
         import torch  # noqa: F401
-        import torchvision  # noqa: F401
         from PIL import Image  # noqa: F401
         return True
     except Exception:                                      # noqa: BLE001
@@ -79,7 +87,12 @@ def reexec_into_venv() -> None:
     if have_deps() or PY == sys.executable:
         return
     print(f"перезапуск в интерпретаторе проекта: {PY}", flush=True)
-    os.execv(PY, [PY, os.path.abspath(__file__)] + sys.argv[1:])
+    args = [PY, os.path.abspath(__file__)] + sys.argv[1:]
+    if os.name == "nt":
+        # os.execv на Windows ведёт себя иначе (новый процесс, старый не
+        # отпускает консоль); ждём дочерний сервер и пробрасываем код выхода.
+        raise SystemExit(subprocess.call(args))
+    os.execv(PY, args)
 
 
 # ------------------------------------------------------------------ этапы
@@ -168,6 +181,18 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     """Остановить этап вместе с потомками (иначе torch живёт до конца)."""
     if proc.poll() is not None:
         return
+    if os.name == "nt":
+        # Windows: групп процессов POSIX нет; taskkill /T снимает всё дерево.
+        try:
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=10)
+        except Exception:                                  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:                              # noqa: BLE001
+                pass
+        return
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except Exception:                                      # noqa: BLE001
@@ -218,12 +243,20 @@ def _exec(cmd: list[str], title: str, kind: str = "stage",
         STATE.update(running=running or (cmd[1] if len(cmd) > 1 else cmd[0]),
                      title=title, command=cmd, kind=kind, set_id=set_id)
     log_append(f"\n$ {' '.join(cmd)}\n")
-    env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+    # PYTHONUTF8=1 — дочерний python тоже пишет файлы в UTF-8, а не в cp1251.
+    env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8",
+               PYTHONUTF8="1")
     code = 1
     try:
-        proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                env=env, start_new_session=True)
+        popen_kwargs = dict(cwd=ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1,
+                            encoding="utf-8", errors="replace", env=env)
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(cmd, **popen_kwargs)
         with LOCK:
             if STATE["job"] != job or STATE["cancel"]:
                 _kill_tree(proc)
@@ -318,7 +351,7 @@ def state_payload() -> dict:
     mp = os.path.join(OUT, "metrics.json")
     if os.path.exists(mp):
         try:
-            m = json.load(open(mp))
+            m = json.load(open(mp, encoding="utf-8"))
             metrics = dict(ssim=(m.get("mean") or {}).get("ssim"),
                            pearson=(m.get("mean") or {}).get("pcc"),
                            gs_ssim=((m.get("gs") or {}).get("mean") or {}).get("ssim"),
@@ -329,7 +362,7 @@ def state_payload() -> dict:
             metrics = None
     try:
         sp = os.path.join(OUT, "sets_summary.json")
-        summary = json.load(open(sp)) if os.path.exists(sp) else None
+        summary = json.load(open(sp, encoding="utf-8")) if os.path.exists(sp) else None
     except Exception:                                      # noqa: BLE001
         summary = None
     return dict(stages=[dict(id=k, title=v["title"], group=v["group"], hint=v["hint"])
@@ -361,7 +394,7 @@ def ensure_default_set() -> dict:
             p = os.path.join(OUT, name)
             if os.path.exists(p):
                 shutil.copyfile(p, os.path.join(path, name))
-        with open(os.path.join(path, "meta.json"), "w") as fh:
+        with open(os.path.join(path, "meta.json"), "w", encoding="utf-8") as fh:
             json.dump(dict(id=sid, created=time.strftime("%Y-%m-%dT%H:%M:%S"),
                            sources=["data/targets"], shipped=True), fh,
                       indent=1, ensure_ascii=False)
@@ -385,7 +418,7 @@ def list_sets_safe() -> list[dict]:
 def _history() -> dict:
     """Кривые обучения: обучение (дистилляция), валидация, тест."""
     log_path = os.path.join(OUT, "train_log.json")
-    rows = json.load(open(log_path)) if os.path.exists(log_path) else []
+    rows = json.load(open(log_path, encoding="utf-8")) if os.path.exists(log_path) else []
     train, val = [], []
     for r in rows:
         st = r.get("stage")
@@ -402,7 +435,7 @@ def _history() -> dict:
     test = None
     mp = os.path.join(OUT, "metrics.json")
     if os.path.exists(mp):
-        m = json.load(open(mp))
+        m = json.load(open(mp, encoding="utf-8"))
         test = dict(ssim=(m.get("mean") or {}).get("ssim"),
                     pearson=(m.get("mean") or {}).get("pcc"),
                     gs_ssim=((m.get("gs") or {}).get("mean") or {}).get("ssim"),
@@ -413,7 +446,7 @@ def _history() -> dict:
     sp_path = os.path.join(OUT, "splits.json")
     if os.path.exists(sp_path):
         try:
-            sp = json.load(open(sp_path))
+            sp = json.load(open(sp_path, encoding="utf-8"))
             splits = dict(
                 train=(sp.get("train") or {}).get("summary"),
                 val=(sp.get("val") or {}).get("summary"),
@@ -440,7 +473,7 @@ def _model_graph() -> dict:
     signature = f"v2-{st.st_mtime_ns}-{st.st_size}"
     cache = os.path.join(CACHE_DIR, f"model_graph_{signature}.json")
     if os.path.exists(cache):
-        with open(cache) as fh:
+        with open(cache, encoding="utf-8") as fh:
             return json.load(fh)
     torch.set_num_threads(2)
     ck = torch.load(ck_path, map_location="cpu", weights_only=True)
@@ -484,7 +517,7 @@ def _model_graph() -> dict:
                params=int(sum(l["numel"] for l in layers)),
                arch=ck.get("arch"), pack=ck.get("pack"),
                note="узел — блок U-Net; пунктир — skip-связь; гистограммы — реальные тензоры best.pt")
-    with open(cache, "w") as fh:
+    with open(cache, "w", encoding="utf-8") as fh:
         json.dump(out, fh)
     return out
 
@@ -518,7 +551,7 @@ def _activations(set_id: str | None, steps: int = 0) -> dict:
     key = f"act_v2_{sid}_{st.st_mtime_ns}_{mt.st_mtime_ns}_{steps}.json"
     cache = os.path.join(CACHE_DIR, key)
     if os.path.exists(cache):
-        return json.load(open(cache))
+        return json.load(open(cache, encoding="utf-8"))
     ck = torch.load(ck_path, map_location="cpu", weights_only=True)
     net = build_net(ck.get("arch") or dict(width=48, depth=5))
     net.load_state_dict(ck["model"])
@@ -567,7 +600,7 @@ def _activations(set_id: str | None, steps: int = 0) -> dict:
         return dict(stages=[], set=set_id, note="нет активаций")
     out = dict(ok=True, stages=stages, set=sid, note="усреднение по каналам, 24×24")
     os.makedirs(CACHE_DIR, exist_ok=True)
-    json.dump(out, open(cache, "w"))
+    json.dump(out, open(cache, "w", encoding="utf-8"))
     return out
 
 

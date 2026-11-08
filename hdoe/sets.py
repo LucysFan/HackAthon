@@ -99,7 +99,7 @@ def build_targets(sid: str, *, invert: bool = True, crop: bool = True,
                 energy=float(arr.reshape(C.N_PLANES, -1).sum(-1).mean()),
                 nonzero_pct=float((arr > 0.02).mean() * 100.0),
                 size=[C.N, C.N], bit_depth=8)
-    with open(os.path.join(set_path(sid), "meta.json"), "w") as fh:
+    with open(os.path.join(set_path(sid), "meta.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, indent=1, ensure_ascii=False)
     return arr
 
@@ -128,7 +128,7 @@ def create_from_array(arr: np.ndarray, *, source_name: str = "array") -> str:
     PR.save_set(np.asarray(arr, dtype=np.float64), set_path(sid))
     PR.save_preview(np.asarray(arr, dtype=np.float64),
                     os.path.join(set_path(sid), "preview.png"))
-    with open(os.path.join(set_path(sid), "meta.json"), "w") as fh:
+    with open(os.path.join(set_path(sid), "meta.json"), "w", encoding="utf-8") as fh:
         json.dump(dict(id=sid, created=time.strftime("%Y-%m-%dT%H:%M:%S"),
                        sources=[source_name], synthetic=True), fh,
                   indent=1, ensure_ascii=False)
@@ -146,7 +146,7 @@ def delete(sid: str) -> bool:
 # ------------------------------------------------------------------ чтение
 def _read_json(path: str) -> dict | None:
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             return json.load(fh)
     except Exception:                                       # noqa: BLE001
         return None

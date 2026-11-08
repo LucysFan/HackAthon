@@ -72,12 +72,12 @@ def phase_from_png(path: str) -> np.ndarray:
 
 def metrics() -> dict:
     p = os.path.join(ROOT, "outputs", "metrics.json")
-    return json.load(open(p)) if os.path.exists(p) else {}
+    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
 
 
 def splits() -> dict:
     p = os.path.join(ROOT, "outputs", "splits.json")
-    return json.load(open(p)) if os.path.exists(p) else {}
+    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
 
 
 # ------------------------------------------------------------------ 1. задача
@@ -153,7 +153,7 @@ def fig_training(sp: dict):
     p = os.path.join(ROOT, "outputs", "train_log.json")
     if not os.path.exists(p):
         return None
-    log = json.load(open(p))
+    log = json.load(open(p, encoding="utf-8"))
     st = [r["step"] for r in log]
     fig, ax = plt.subplots(1, 2, figsize=(10.4, 3.4),
                            gridspec_kw=dict(wspace=0.22))

@@ -165,7 +165,7 @@ def main() -> int:
                                     ssim_planes=r["ssim_planes"],
                                     pcc_planes=r["pcc_planes"]) for r in test_rows]),
                seconds=time.time() - t0)
-    with open(args.out, "w") as fh:
+    with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=1, ensure_ascii=False)
 
     for part in ("train", "val", "test"):

@@ -231,7 +231,7 @@ def stage_distill(net, pack, args, log, out_dir, best, val_quads, snap_quad):
                        val_per_plane_pcc=val["per_plane_pcc"],
                        lr=sched.get_last_lr()[0], elapsed=time.time() - t0)
             log.append(rec)
-            json.dump(log, open(os.path.join(out_dir, "train_log.json"), "w"), indent=1)
+            json.dump(log, open(os.path.join(out_dir, "train_log.json"), "w", encoding="utf-8"), indent=1)
             print(f"    VAL step {step}: SSIM {val['ssim']:.4f} PCC {val['pcc']:.4f}", flush=True)
             save_snapshot(net, snap_quad, step, args)
             score = val["ssim"] + val["pcc"]
@@ -283,7 +283,7 @@ def stage_e2e(net, args, log, out_dir, best, val_quads, fixed, unroll=0, gain=1.
                        val_per_plane_pcc=val["per_plane_pcc"],
                        lr=sched.get_last_lr()[0], elapsed=time.time() - t0)
             log.append(rec)
-            json.dump(log, open(os.path.join(out_dir, "train_log.json"), "w"), indent=1)
+            json.dump(log, open(os.path.join(out_dir, "train_log.json"), "w", encoding="utf-8"), indent=1)
             print(f"    VAL step {step}: SSIM {val['ssim']:.4f} PCC {val['pcc']:.4f}", flush=True)
             save_snapshot(net, torch.as_tensor(fixed, dtype=torch.float32), step, args)
             score = val["ssim"] + val["pcc"]
@@ -362,7 +362,7 @@ def main() -> None:
     best = -1e9
     if os.path.exists(log_path):
         try:
-            log = json.load(open(log_path))
+            log = json.load(open(log_path, encoding="utf-8"))
             best = max([r.get("val_ssim", -1) + r.get("val_pcc", -1) for r in log] or [-1e9])
         except Exception:                                        # noqa: BLE001
             log = []
@@ -398,7 +398,7 @@ def main() -> None:
             torch.save(pack, pack_path)
         print("стадия 1: дистилляция учительских масок", flush=True)
         best = stage_distill(net, pack, args, log, out_dir, best, val_quads, q_target)
-        json.dump(log, open(log_path, "w"), indent=1)
+        json.dump(log, open(log_path, "w", encoding="utf-8"), indent=1)
         if args.stage == "distill":
             print("обучение (стадия 1) завершено")
             return
@@ -413,7 +413,7 @@ def main() -> None:
               f"({args.e2e_steps} шагов, lr {args.e2e_lr})", flush=True)
         best = stage_e2e(net, args, log, out_dir, best, val_quads, fixed,
                          unroll=args.unroll, gain=args.unroll_gain)
-        json.dump(log, open(log_path, "w"), indent=1)
+        json.dump(log, open(log_path, "w", encoding="utf-8"), indent=1)
     print("обучение завершено")
 
 

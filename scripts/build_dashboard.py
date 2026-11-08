@@ -139,11 +139,11 @@ def main() -> int:
                                        T.to_u8(targets))
     # метрики и тесты
     metrics_path = os.path.join(out_dir, "metrics.json")
-    metrics = json.load(open(metrics_path)) if os.path.exists(metrics_path) else {}
+    metrics = json.load(open(metrics_path, encoding="utf-8")) if os.path.exists(metrics_path) else {}
     tests_path = os.path.join(out_dir, "tests.json")
     if not os.path.exists(tests_path):
         tests_path = os.path.join(C.PATHS.out, "tests.json")
-    tests = json.load(open(tests_path)) if os.path.exists(tests_path) else {}
+    tests = json.load(open(tests_path, encoding="utf-8")) if os.path.exists(tests_path) else {}
 
     # ----------------------------------------------------------- фазы NN/GS
     phases, doe_codes, recons, ssims = {}, {}, {}, {}
@@ -299,9 +299,9 @@ def main() -> int:
         steps = [0]
     sizes["train_masks.u8.bin"] = write_u8(os.path.join(DATA, "train_masks.u8.bin"), masks)
     log_path = os.path.join(train_dir, "train_log.json")
-    train_log = json.load(open(log_path)) if os.path.exists(log_path) else []
-    json.dump(train_log, open(os.path.join(DATA, "train_log.json"), "w"), indent=1)
-    json.dump(dict(steps=steps), open(os.path.join(DATA, "train_steps.json"), "w"))
+    train_log = json.load(open(log_path, encoding="utf-8")) if os.path.exists(log_path) else []
+    json.dump(train_log, open(os.path.join(DATA, "train_log.json"), "w", encoding="utf-8"), indent=1)
+    json.dump(dict(steps=steps), open(os.path.join(DATA, "train_steps.json"), "w", encoding="utf-8"))
     # реконструкции на снапшотах (для A3) — по самой дешёвой плоскости
     snap_rec = []
     for m in masks[:24]:
@@ -315,18 +315,18 @@ def main() -> int:
     # ---------------------------------------------------------------- тесты
     if not tests:
         tests = {"summary": dict(passed=0, total=0, all_passed=False)}
-    json.dump(tests, open(os.path.join(DATA, "tests.json"), "w"), indent=1, ensure_ascii=False)
+    json.dump(tests, open(os.path.join(DATA, "tests.json"), "w", encoding="utf-8"), indent=1, ensure_ascii=False)
     # протокол train/val/test (scripts/eval_splits.py) — для офлайн-режима
     splits = None
     sp_path = os.path.join(out_dir, "splits.json")
     if os.path.exists(sp_path):
-        sp = json.load(open(sp_path))
+        sp = json.load(open(sp_path, encoding="utf-8"))
         splits = dict(train=(sp.get("train") or {}).get("summary"),
                       val=(sp.get("val") or {}).get("summary"),
                       test=(sp.get("test") or {}).get("summary"),
                       sets=(sp.get("test") or {}).get("sets"),
                       created=sp.get("created"))
-        json.dump(splits, open(os.path.join(DATA, "splits.json"), "w"), indent=1,
+        json.dump(splits, open(os.path.join(DATA, "splits.json"), "w", encoding="utf-8"), indent=1,
                   ensure_ascii=False)
         print(f"  сплиты: train {splits['train']['ssim']:.3f} / "
               f"val {splits['val']['ssim']:.3f} / test {splits['test']['ssim']:.3f} SSIM")
@@ -380,7 +380,7 @@ def main() -> int:
                                    weights_only=False).get("pack") or {})
                        if os.path.exists(os.path.join(out_dir, "best.pt")) else {}),
     )
-    json.dump(manifest, open(os.path.join(DATA, "manifest.json"), "w"), indent=1,
+    json.dump(manifest, open(os.path.join(DATA, "manifest.json"), "w", encoding="utf-8"), indent=1,
               ensure_ascii=False)
     # ---------------- data_bundle.js: офлайн-режим (открытие двойным кликом)
     js_size = write_js_bundle(manifest)
@@ -426,7 +426,7 @@ def write_js_bundle(manifest: dict) -> int:
                        ("tests.json", "tests"), ("splits.json", "splits")):
         path = os.path.join(DATA, fname)
         if os.path.exists(path):
-            jsons[key] = json.load(open(path))
+            jsons[key] = json.load(open(path, encoding="utf-8"))
     js = ("// Автоматически собранный бандл данных для офлайн-режима (gzip + base64).\n"
           "// Сформирован scripts/build_dashboard.py; не редактировать вручную.\n"
           "window.HDOE_BUNDLE={\n"
@@ -434,7 +434,7 @@ def write_js_bundle(manifest: dict) -> int:
           "b64:{\n" + ",\n".join(parts) + "\n},\n"
           "json:" + json.dumps(jsons, ensure_ascii=False) + "\n};\n")
     path = os.path.join(C.PATHS.dashboard, "data_bundle.js")
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write(js)
     return len(js)
 

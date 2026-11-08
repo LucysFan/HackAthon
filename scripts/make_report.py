@@ -98,7 +98,7 @@ def load_json(name):
     for base in (C.PATHS.out, C.PATHS.root):
         p = os.path.join(base, name)
         if os.path.exists(p):
-            return json.load(open(p))
+            return json.load(open(p, encoding="utf-8"))
     return {}
 
 
@@ -114,7 +114,7 @@ def main() -> int:
     metrics = load_json("metrics.json")
     tests = load_json("tests.json")
     log_path = os.path.join(C.PATHS.out, "train_log.json")
-    train_log = json.load(open(log_path)) if os.path.exists(log_path) else []
+    train_log = json.load(open(log_path, encoding="utf-8")) if os.path.exists(log_path) else []
     rows = metrics.get("planes", [])
     gs_rows = (metrics.get("gs") or {}).get("planes", [])
     mean = metrics.get("mean", {})
@@ -306,7 +306,7 @@ def main() -> int:
         f"время одного прямого прохода на CPU — {ph.get('seconds', 0):.1f} с."))
     sweep_path = os.path.join(C.PATHS.out, "phys_sweep.json")
     if os.path.exists(sweep_path):
-        sw = json.load(open(sweep_path))
+        sw = json.load(open(sweep_path, encoding="utf-8"))
         d = [["K (шагов физики внутри сети)", "PCC", "SSIM", "время, с"]]
         for r in sw.get("rows", []):
             d.append([f"{r['K']}", f"{r['pcc']:.4f}", f"{r['ssim']:.4f}", f"{r['seconds']:.1f}"])

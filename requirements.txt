@@ -1,8 +1,8 @@
 # Зависимости решения. Проверено на Python 3.11, CPU.
-# torch/torchvision в Dockerfile ставятся отдельно CPU-сборкой
+# torch в Dockerfile ставится отдельно CPU-сборкой
 # (--index-url https://download.pytorch.org/whl/cpu), здесь — для локальной установки.
-torch==2.14.1
-torchvision==0.29.2
+# torchvision не нужен: прямой проход сети использует только torch.
+torch==2.15.0
 numpy==2.2.6
 scipy==1.15.3
 scikit-image==0.26.0

@@ -16,8 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt .
-# torch/torchvision ставим CPU-сборкой: в контейнере всё равно нет GPU, образ втрое меньше
-RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0 torchvision==0.29.2 \
+# torch ставим CPU-сборкой: в контейнере всё равно нет GPU, образ втрое меньше.
+# torchvision не ставим: сетка прямого прохода написана на чистом torch.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0 \
     && pip install -r requirements.txt
 
 COPY . .

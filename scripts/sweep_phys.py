@@ -85,7 +85,7 @@ def main() -> int:
     data = dict(created=time.strftime("%Y-%m-%dT%H:%M:%S"), seed=C.SEED,
                 checkpoint=os.path.relpath(args.ckpt, C.PATHS.root),
                 network_only=dict(pcc=p0, ssim=s0), rows=rows)
-    with open(args.out, "w") as fh:
+    with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=1, ensure_ascii=False)
     print(f"сохранено: {args.out}")
     return 0

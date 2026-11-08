@@ -52,7 +52,7 @@ F_MONO = _font(14)
 
 def load_json(*parts):
     p = os.path.join(ROOT, *parts)
-    return json.load(open(p)) if os.path.exists(p) else {}
+    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
 
 
 def arr_u8(path, shape=None):

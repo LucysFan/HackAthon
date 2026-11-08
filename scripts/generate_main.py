@@ -77,7 +77,7 @@ def splits_ok() -> dict | None:
     if not os.path.exists(p):
         return None
     try:
-        return json.load(open(p))
+        return json.load(open(p, encoding="utf-8"))
     except Exception:                                        # noqa: BLE001
         return None
 
@@ -87,7 +87,7 @@ def summary() -> None:
     print("\n—— что получилось ——————————————————————————————")
     mp = os.path.join(ROOT, "outputs", "metrics.json")
     if os.path.exists(mp):
-        m = json.load(open(mp))
+        m = json.load(open(mp, encoding="utf-8"))
         mean = m.get("mean") or {}
         print(f"сдаваемый набор: SSIM {mean.get('ssim', 0):.4f} · "
               f"Pearson {mean.get('pcc', 0):.4f}")

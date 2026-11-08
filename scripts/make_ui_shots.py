@@ -188,7 +188,7 @@ def ui_test(B):
 
     ax = fig.add_subplot(gs[1, 4:6])
     panel(ax, "SSIM и Pearson на трёх наборах", "train / val / test")
-    sp = json.load(open(os.path.join(ROOT, "outputs", "splits.json"))) \
+    sp = json.load(open(os.path.join(ROOT, "outputs", "splits.json"), encoding="utf-8")) \
         if os.path.exists(os.path.join(ROOT, "outputs", "splits.json")) else None
     if sp:
         x = np.arange(3)
@@ -219,7 +219,7 @@ def model_graph() -> dict | None:
     """Статистика весов: из кэша пульта, иначе считаем прямо из best.pt."""
     gpath = os.path.join(ROOT, "outputs", "_cache", "model_graph.json")
     if os.path.exists(gpath):
-        return json.load(open(gpath))
+        return json.load(open(gpath, encoding="utf-8"))
     ck_path = os.path.join(ROOT, "outputs", "best.pt")
     if not os.path.exists(ck_path):
         return None
