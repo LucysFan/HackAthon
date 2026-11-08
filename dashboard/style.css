@@ -330,3 +330,16 @@ footer{display:flex;justify-content:space-between;gap:10px;color:var(--muted);fo
   .planes-grid{grid-template-columns:1fr 1fr}
   .rp-stages{grid-template-columns:1fr}
 }
+
+/* ---------------- протокол train / val / test ---------------- */
+.split-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
+.split-cell{background:#0a1322;border:1px solid #1d2c46;border-radius:10px;padding:7px 9px}
+.split-k{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.4px}
+.split-k span{font-family:var(--mono);text-transform:none;color:var(--dim)}
+.split-v{font-family:var(--mono);font-size:20px;font-weight:600;color:var(--accent);
+  line-height:1.2;display:flex;align-items:baseline;gap:6px}
+.split-v small{font-size:10px;color:var(--muted);font-weight:400}
+.split-p{font-family:var(--mono);font-size:11px;color:var(--accent2)}
+.split-n{font-size:10px;color:var(--dim);margin-top:3px;line-height:1.25}
+@media (max-width:1080px){ .split-row{grid-template-columns:1fr} }

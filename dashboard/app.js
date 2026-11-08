@@ -789,6 +789,33 @@ function renderCurves() {
   ctx.fillStyle = '#ffb347'; ctx.beginPath(); ctx.arc(X(1000), Y(testVal), 3.4 * dpr(), 0, 7); ctx.fill();
   $('#curve-legend').innerHTML = series.map(s => `<span style="color:${s.color}">■ ${s.name}</span>`)
     .join(' ') + `<span style="color:#ffb347">▬ тест ${fmt(testVal, 3)}</span>`;
+  renderSplits();
+}
+
+/** Три набора одной моделью: тренировка / валидация / тест. */
+function renderSplits() {
+  const box = $('#split-row');
+  if (!box) return;
+  // под пультом — свежие данные с сервера, офлайн — из бандла
+  const sp = (RUN.history && RUN.history.splits) ||
+    (D.manifest && D.manifest.splits) || null;
+  if (!sp || !sp.train || !sp.val || !sp.test) {
+    box.innerHTML = `<span class="hint">протокол train / val / test:
+      <code>python scripts/eval_splits.py</code></span>`;
+    return;
+  }
+  const cell = (key, label, note) => {
+    const s = sp[key];
+    return `<div class="split-cell">
+      <div class="split-k">${label}<span>n = ${s.n}</span></div>
+      <div class="split-v">${fmt(s.ssim, 3)}<small>SSIM</small></div>
+      <div class="split-p">Pearson ${fmt(s.pcc, 3)}</div>
+      <div class="split-n">${note}</div></div>`;
+  };
+  box.innerHTML =
+    cell('train', 'тренировка', 'четвёрки корпуса из обучения') +
+    cell('val', 'валидация', 'восемь четвёрок, не видевших обучения') +
+    cell('test', 'тест', 'сдаваемый набор и пять комплектов');
 }
 
 /* =================================================================== 3. АЛГОРИТМ */

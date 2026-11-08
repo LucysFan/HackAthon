@@ -169,6 +169,18 @@ setTimeout(() => { console.log('\nТАЙМАУТ 240 с: проверка не �
   const primVal = doc.querySelector('#c-ssim').textContent;
   check('протокол «без нормировки» даёт другое значение', refVal !== primVal, `${refVal} vs ${primVal}`);
 
+  step('протокол train/val/test');
+  // ---- протокол train / val / test (блок под кривыми)
+  const splitBox = doc.querySelector('#split-row');
+  check('блок train/val/test есть', !!splitBox);
+  const splitCells = splitBox.querySelectorAll('.split-cell').length;
+  check('три набора в блоке', splitCells === 3, String(splitCells));
+  if (splitCells === 3) {
+    const txt = splitBox.textContent;
+    check('в блоке есть все три названия',
+      /тренировка/.test(txt) && /валидация/.test(txt) && /тест/.test(txt));
+  }
+
   // ---- числа на экране = manifest.json
   const rows = manifest.file_metrics.nn;
   check('SSIM плоскости 1 совпадает с metrics.json',
